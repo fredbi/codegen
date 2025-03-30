@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package swag
+package mangling
 
 import (
 	"strings"
@@ -20,296 +20,110 @@ import (
 	"unicode/utf8"
 )
 
-// GoNamePrefixFunc sets an optional rule to prefix go names
-// which do not start with a letter.
-//
-// The prefix function is assumed to return a string that starts with an upper case letter.
-//
-// e.g. to help convert "123" into "{prefix}123"
-//
-// The default is to prefix with "X"
-var GoNamePrefixFunc func(string) string
-
-func prefixFunc(name, in string) string {
-	if GoNamePrefixFunc == nil {
-		return "X" + in
-	}
-
-	return GoNamePrefixFunc(name) + in
-}
-
-const (
-	// collectionFormatComma = "csv"
-	collectionFormatSpace = "ssv"
-	collectionFormatTab   = "tsv"
-	collectionFormatPipe  = "pipes"
-	collectionFormatMulti = "multi"
-)
-
-// JoinByFormat joins a string array by a known format (e.g. swagger's collectionFormat attribute):
-//
-//	ssv: space separated value
-//	tsv: tab separated value
-//	pipes: pipe (|) separated value
-//	csv: comma separated value (default)
-func JoinByFormat(data []string, format string) []string {
-	if len(data) == 0 {
-		return data
-	}
-	var sep string
-	switch format {
-	case collectionFormatSpace:
-		sep = " "
-	case collectionFormatTab:
-		sep = "\t"
-	case collectionFormatPipe:
-		sep = "|"
-	case collectionFormatMulti:
-		return data
-	default:
-		sep = ","
-	}
-	return []string{strings.Join(data, sep)}
-}
-
-// SplitByFormat splits a string by a known format:
-//
-//	ssv: space separated value
-//	tsv: tab separated value
-//	pipes: pipe (|) separated value
-//	csv: comma separated value (default)
-func SplitByFormat(data, format string) []string {
-	if data == "" {
-		return nil
-	}
-	var sep string
-	switch format {
-	case collectionFormatSpace:
-		sep = " "
-	case collectionFormatTab:
-		sep = "\t"
-	case collectionFormatPipe:
-		sep = "|"
-	case collectionFormatMulti:
-		return nil
-	default:
-		sep = ","
-	}
-	var result []string
-	for _, s := range strings.Split(data, sep) {
-		if ts := strings.TrimSpace(s); ts != "" {
-			result = append(result, ts)
-		}
-	}
-	return result
-}
-
 // Removes leading whitespaces
-func trim(str string) string {
-	return strings.TrimSpace(str)
-}
+func trim(str string) string { return strings.TrimSpace(str) }
 
-// Shortcut to strings.ToUpper()
+// upper is strings.ToUpper() combined with trim
 func upper(str string) string {
 	return strings.ToUpper(trim(str))
 }
 
-// Shortcut to strings.ToLower()
+// lower is strings.ToLower() combined with trim
 func lower(str string) string {
 	return strings.ToLower(trim(str))
 }
 
-// Camelize an uppercased word
-func Camelize(word string) string {
-	camelized := poolOfBuffers.BorrowBuffer(len(word))
-	defer func() {
-		poolOfBuffers.RedeemBuffer(camelized)
-	}()
+// isEqualFoldIgnoreSpace is the same as strings.EqualFold, but
+// it ignores leading and trailing blank spaces in the compared
+// string.
+//
+// base is assumed to be composed of upper-cased runes, and be already
+// trimmed.
+//
+// This code is heavily inspired from strings.EqualFold.
+func isEqualFoldIgnoreSpace(base []rune, str string) bool {
+	var i, baseIndex int
+	// equivalent to b := []byte(str), but without data copy
+	b := hackStringBytes(str)
 
-	for pos, ru := range []rune(word) {
-		if pos > 0 {
-			camelized.WriteRune(unicode.ToLower(ru))
-		} else {
-			camelized.WriteRune(unicode.ToUpper(ru))
-		}
-	}
-	return camelized.String()
-}
+	for i < len(b) {
+		if c := b[i]; c < utf8.RuneSelf {
+			// fast path for ASCII
+			if c != ' ' && c != '\t' {
+				break
+			}
+			i++
 
-// ToFileName lowercases and underscores a go type name
-func ToFileName(name string) string {
-	in := split(name)
-	out := make([]string, 0, len(in))
-
-	for _, w := range in {
-		out = append(out, lower(w))
-	}
-
-	return strings.Join(out, "_")
-}
-
-// ToCommandName lowercases and underscores a go type name
-func ToCommandName(name string) string {
-	in := split(name)
-	out := make([]string, 0, len(in))
-
-	for _, w := range in {
-		out = append(out, lower(w))
-	}
-	return strings.Join(out, "-")
-}
-
-// ToHumanNameLower represents a code name as a human series of words
-func ToHumanNameLower(name string) string {
-	s := poolOfSplitters.BorrowSplitter(withPostSplitInitialismCheck)
-	in := s.split(name)
-	poolOfSplitters.RedeemSplitter(s)
-	out := make([]string, 0, len(*in))
-
-	for _, w := range *in {
-		if !w.IsInitialism() {
-			out = append(out, lower(w.GetOriginal()))
-		} else {
-			out = append(out, trim(w.GetOriginal()))
-		}
-	}
-	poolOfLexems.RedeemLexems(in)
-
-	return strings.Join(out, " ")
-}
-
-// ToHumanNameTitle represents a code name as a human series of words with the first letters titleized
-func ToHumanNameTitle(name string) string {
-	s := poolOfSplitters.BorrowSplitter(withPostSplitInitialismCheck)
-	in := s.split(name)
-	poolOfSplitters.RedeemSplitter(s)
-
-	out := make([]string, 0, len(*in))
-	for _, w := range *in {
-		original := trim(w.GetOriginal())
-		if !w.IsInitialism() {
-			out = append(out, Camelize(original))
-		} else {
-			out = append(out, original)
-		}
-	}
-	poolOfLexems.RedeemLexems(in)
-
-	return strings.Join(out, " ")
-}
-
-// ToJSONName camelcases a name which can be underscored or pascal cased
-func ToJSONName(name string) string {
-	in := split(name)
-	out := make([]string, 0, len(in))
-
-	for i, w := range in {
-		if i == 0 {
-			out = append(out, lower(w))
 			continue
 		}
-		out = append(out, Camelize(trim(w)))
-	}
-	return strings.Join(out, "")
-}
 
-// ToVarName camelcases a name which can be underscored or pascal cased
-func ToVarName(name string) string {
-	res := ToGoName(name)
-	if isInitialism(res) {
-		return lower(res)
-	}
-	if len(res) <= 1 {
-		return lower(res)
-	}
-	return lower(res[:1]) + res[1:]
-}
-
-// ToGoName translates a swagger name which can be underscored or camel cased to a name that golint likes
-func ToGoName(name string) string {
-	s := poolOfSplitters.BorrowSplitter(withPostSplitInitialismCheck)
-	lexems := s.split(name)
-	poolOfSplitters.RedeemSplitter(s)
-	defer func() {
-		poolOfLexems.RedeemLexems(lexems)
-	}()
-	lexemes := *lexems
-
-	if len(lexemes) == 0 {
-		return ""
-	}
-
-	result := poolOfBuffers.BorrowBuffer(len(name))
-	defer func() {
-		poolOfBuffers.RedeemBuffer(result)
-	}()
-
-	// check if not starting with a letter, upper case
-	firstPart := lexemes[0].GetUnsafeGoName()
-
-	// NOTE: no longer forcing the first part to be fully upper-cased
-
-	if c := firstPart[0]; c < utf8.RuneSelf {
-		// ASCII
-		switch {
-		case 'A' <= c && c <= 'Z':
-			result.WriteString(firstPart)
-		case 'a' <= c && c <= 'z':
-			result.WriteByte(c - 'a' + 'A')
-			result.WriteString(firstPart[1:])
-		default:
-			result.WriteString(prefixFunc(name, firstPart))
-			// NOTE: no longer check if prefixFunc returns a string that starts with uppercase:
-			// assume this is always the case
+		// unicode case
+		r, size := utf8.DecodeRune(b[i:])
+		if !unicode.IsSpace(r) {
+			break
 		}
-	} else {
-		// unicode
-		firstRune, _ := utf8.DecodeRuneInString(firstPart)
-		switch {
-		case !unicode.IsLetter(firstRune):
-			result.WriteString(prefixFunc(name, firstPart))
-		case !unicode.IsUpper(firstRune):
-			result.WriteString(prefixFunc(name, firstPart))
-		default:
-			result.WriteString(firstPart)
+		i += size
+	}
+
+	if i >= len(b) {
+		return len(base) == 0
+	}
+
+	for _, baseRune := range base {
+		if i >= len(b) {
+			break
 		}
-	}
 
-	for _, lexem := range lexemes[1:] {
-		goName := lexem.GetUnsafeGoName()
+		if c := b[i]; c < utf8.RuneSelf {
+			// single byte rune case (ASCII)
+			if baseRune >= utf8.RuneSelf {
+				return false
+			}
 
-		// NOTE: no longer forcing initialism parts to be fully upper-cased:
-		// * pluralized initialism preserve their trailing "s"
-		// * mixed-cased initialisms, such as IPv4, are preserved
-		result.WriteString(goName)
-	}
+			baseChar := byte(baseRune)
+			if c != baseChar && ((c < 'a') || (c > 'z') || (c-'a'+'A' != baseChar)) {
+				return false
+			}
 
-	return result.String()
-}
+			baseIndex++
+			i++
 
-// ContainsStrings searches a slice of strings for a case-sensitive match
-func ContainsStrings(coll []string, item string) bool {
-	for _, a := range coll {
-		if a == item {
-			return true
+			continue
 		}
-	}
-	return false
-}
 
-// ContainsStringsCI searches a slice of strings for a case-insensitive match
-func ContainsStringsCI(coll []string, item string) bool {
-	for _, a := range coll {
-		if strings.EqualFold(a, item) {
-			return true
+		// unicode case
+		r, size := utf8.DecodeRune(b[i:])
+		if unicode.ToUpper(r) != baseRune {
+			return false
 		}
+		baseIndex++
+		i += size
 	}
-	return false
-}
 
-// CommandLineOptionsGroup represents a group of user-defined command line options
-type CommandLineOptionsGroup struct {
-	ShortDescription string
-	LongDescription  string
-	Options          interface{}
+	if baseIndex != len(base) {
+		return false
+	}
+
+	// all passed: now we should only have blanks
+	for i < len(b) {
+		if c := b[i]; c < utf8.RuneSelf {
+			// fast path for ASCII
+			if c != ' ' && c != '\t' {
+				return false
+			}
+			i++
+
+			continue
+		}
+
+		// unicode case
+		r, size := utf8.DecodeRune(b[i:])
+		if !unicode.IsSpace(r) {
+			return false
+		}
+
+		i += size
+	}
+
+	return true
 }

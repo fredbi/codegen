@@ -12,209 +12,169 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package swag
+package mangling
 
 import (
 	"sort"
 	"strings"
-	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
-var (
-	// commonInitialisms are common acronyms that are kept as whole uppercased words.
-	commonInitialisms *indexOfInitialisms
-
-	// initialisms is a slice of sorted initialisms
-	initialisms []string
-
-	// a copy of initialisms pre-baked as []rune
-	initialismsRunes      [][]rune
-	initialismsUpperCased [][]rune
-	initialismsPluralForm []pluralForm // pre-baked indexed support for pluralization
-
-	isInitialism func(string) bool
-
-	maxAllocMatches int
-)
-
-func init() {
-	// List of initialisms taken from https://github.com/golang/lint/blob/3390df4df2787994aea98de825b964ac7944b817/lint.go#L732-L769
-	//
-	// Now superseded by: https://github.com/mgechev/revive/blob/master/lint/name.go#L93
-	//
-	// Notice that initialisms are not necessarily uppercased.
-	// In particular, we may find plural forms with mixed case like "IDs" or legit values like "IPv4" or "IPv6".
-	//
-	// At this moment, we don't support pluralization of terms that ends with an 's' (or 'S').
-	// We don't want to support pluralization of terms which would otherwise conflict with another one,
-	// like "HTTPs" vs "HTTPS". All these should be considered invariant. Hence: "Https" matches "HTTPS" and
-	// "HTTPSS" is "HTTPS" followed by "S".
-	configuredInitialisms := map[string]bool{
-		// initialism: true|false = accept a pluralized form 'Xs' - false means invariant plural
-		"ACL":   true,
-		"API":   true,
-		"ASCII": true,
-		"CPU":   true,
-		"CSS":   false,
-		"DNS":   false,
-		"EOF":   true,
-		"GUID":  true,
-		"HTML":  true,
-		"HTTPS": false,
-		"HTTP":  false,
-		"ID":    true,
-		"IP":    true,
-		"IPv4":  true, // prefer the mixed case outcome IPv4 over the capitalized IPV4
-		"IPv6":  true, // prefer the mixed case outcome
-		"JSON":  true,
-		"LHS":   true,
-		"OAI":   true, // not in the linter's list, but added for the openapi context
-		"QPS":   false,
-		"RAM":   true,
-		"RHS":   false,
-		"RPC":   true,
-		"SLA":   true,
-		"SMTP":  true,
-		"SQL":   true,
-		"SSH":   true,
-		"TCP":   true,
-		"TLS":   false,
-		"TTL":   true,
-		"UDP":   true,
-		"UI":    true,
-		"UID":   true,
-		"UUID":  true,
-		"URI":   true,
-		"URL":   true,
-		"UTF8":  true,
-		"VM":    true,
-		"XML":   true,
-		"XMPP":  true,
-		"XSRF":  true,
-		"XSS":   false,
-	}
-
-	// a thread-safe index of initialisms
-	commonInitialisms = newIndexOfInitialisms().load(configuredInitialisms)
-	initialisms = commonInitialisms.sorted()
-	initialismsRunes = asRunes(initialisms)
-	initialismsUpperCased = asUpperCased(initialisms)
-	maxAllocMatches = maxAllocHeuristic(initialismsRunes)
-	initialismsPluralForm = asPluralForms(initialisms, commonInitialisms)
-
-	// a test function
-	isInitialism = commonInitialisms.isInitialism
-}
-
-func asRunes(in []string) [][]rune {
-	out := make([][]rune, len(in))
-	for i, initialism := range in {
-		out[i] = []rune(initialism)
-	}
-
-	return out
-}
-
-func asUpperCased(in []string) [][]rune {
-	out := make([][]rune, len(in))
-
-	for i, initialism := range in {
-		out[i] = []rune(upper(trim(initialism)))
-	}
-
-	return out
-}
-
-// asPluralForms bakes an index of pluralization support.
-func asPluralForms(in []string, idx *indexOfInitialisms) []pluralForm {
-	out := make([]pluralForm, len(in))
-	for i, initialism := range in {
-		out[i] = idx.pluralForm(initialism)
-	}
-
-	return out
-}
-
-func maxAllocHeuristic(in [][]rune) int {
-	heuristic := make(map[rune]int)
-	for _, initialism := range in {
-		heuristic[initialism[0]]++
-	}
-
-	var maxAlloc int
-	for _, val := range heuristic {
-		if val > maxAlloc {
-			maxAlloc = val
-		}
-	}
-
-	return maxAlloc
-}
-
-// AddInitialisms add additional initialisms.
+// DefaultInitialisms returns all the initialisms configured by default for this package.
 //
-// This method adds extra words as "initialisms" (i.e. words that won't be camel cased or titled cased),
-// to the existing list of common initialisms (such as ID, HTTP...).
+// # Motivation
 //
-// The list of initialisms is maintained at the package level, so this method can't be used concurrently.
+// Common initialisms are acronyms for which the ordinary camel-casing rules are altered and
+// for which we retain the original case.
 //
-// It is typically used when initializing a command line utility, such as go-swagger.
-func AddInitialisms(words ...string) {
-	for _, word := range words {
-		// commonInitialisms[upper(word)] = true
-		uword := upper(word)
-		commonInitialisms.add(uword, !strings.HasSuffix(uword, "S"))
+// This is largely specific to the go naming conventions enforced by golint (now revive).
+//
+// # Example
+//
+// In go, "id" is a good-looking identifier, but "Id" is not and "ID" is preferred
+// (notice that this stems only from conventions: the go compiler accepts all of these).
+//
+// Similarly, we may use "http", but not "Http". In this case, "HTTP" is preferred.
+//
+// # Reference and customization
+//
+// The default list of these casing-style exceptions is taken from the [github.com/mgechev/revive] linter for go:
+// https://github.com/mgechev/revive/blob/master/lint/name.go#L93
+//
+// There are a few additions to the original list, such as IPv4, IPv6 and OAI ("OpenAPI").
+//
+// For these additions, "IPv4" would be preferred to "Ipv4" or "IPV4", and "OAI" to "Oai"
+//
+// You may redefine this list entirely using the mangler option [WithInitialisms], or simply add extra definitions
+// using [WithAdditionalInitialisms].
+//
+// # Mixed-case and plurals
+//
+// Notice that initialisms are not necessarily fully upper-cased: a mixed-case initialism indicates the preferred casing.
+//
+// Obviously, lower-case only initialisms do not make a lot of sense: if lower-case only initialisms are added,
+// they will be considered fully capitalized.
+//
+// Plural forms use mixed case like "IDs". And so do values like "IPv4" or "IPv6".
+//
+// The [NameMangler] automatically detects simple plurals for words such as "IDs" or "APIs",
+// so you don't need to configure these variants.
+//
+// At this moment, it doesn't support pluralization of terms that ends with an 's' (or 'S'), since there is
+// no clear consensus on whether a word like DNS should be pluralized as DNSes or remain invariant.
+// The [NameMangler] consider those invariant. Therefore DNSs or DNSes are not recognized as plurals for DNS.
+//
+// Besids, we don't want to support pluralization of terms which would otherwise conflict with another one,
+// like "HTTPs" vs "HTTPS". All these should be considered invariant. Hence: "Https" matches "HTTPS" and
+// "HTTPSS" is "HTTPS" followed by "S".
+func DefaultInitialisms() []string {
+	return []string{
+		"ACL",
+		"API",
+		"ASCII",
+		"CPU",
+		"CSS",
+		"DNS",
+		"EOF",
+		"GUID",
+		"HTML",
+		"HTTPS",
+		"HTTP",
+		"ID",
+		"IP",
+		"IPv4", // prefer the mixed case outcome IPv4 over the capitalized IPV4
+		"IPv6", // prefer the mixed case outcome IPv6 over the capitalized IPV6
+		"JSON",
+		"LHS",
+		"OAI",
+		"QPS",
+		"RAM",
+		"RHS",
+		"RPC",
+		"SLA",
+		"SMTP",
+		"SQL",
+		"SSH",
+		"TCP",
+		"TLS",
+		"TTL",
+		"UDP",
+		"UI",
+		"UID",
+		"UUID",
+		"URI",
+		"URL",
+		"UTF8",
+		"VM",
+		"XML",
+		"XMPP",
+		"XSRF",
+		"XSS",
 	}
-	// sort again
-	initialisms = commonInitialisms.sorted()
-	initialismsRunes = asRunes(initialisms)
-	initialismsUpperCased = asUpperCased(initialisms)
-	initialismsPluralForm = asPluralForms(initialisms, commonInitialisms)
 }
 
-// indexOfInitialisms is a thread-safe implementation of the sorted index of initialisms.
-// Since go1.9, this may be implemented with sync.Map.
 type indexOfInitialisms struct {
-	sortMutex *sync.Mutex
-	index     *sync.Map
+	index map[string]struct{}
+	initialismsCache
 }
 
 func newIndexOfInitialisms() *indexOfInitialisms {
 	return &indexOfInitialisms{
-		sortMutex: new(sync.Mutex),
-		index:     new(sync.Map),
+		index: make(map[string]struct{}),
 	}
 }
 
-func (m *indexOfInitialisms) load(initial map[string]bool) *indexOfInitialisms {
-	m.sortMutex.Lock()
-	defer m.sortMutex.Unlock()
-	for k, v := range initial {
-		m.index.Store(k, v)
+func (m *indexOfInitialisms) add(words ...string) *indexOfInitialisms {
+	for _, word := range words {
+		// sanitization of injected words: trimmed from blanks, and must start with a letter
+		trimmed := strings.TrimSpace(word)
+
+		firstRune, _ := utf8.DecodeRuneInString(trimmed)
+		if !unicode.IsLetter(firstRune) {
+			continue
+		}
+
+		// Initialisms are case-sensitive. This means that we support mixed-case words.
+		// However, if specified as a lower-case string, the initialism should be fully capitalized.
+		if trimmed == strings.ToLower(trimmed) {
+			m.index[strings.ToUpper(trimmed)] = struct{}{}
+
+			continue
+		}
+
+		m.index[trimmed] = struct{}{}
 	}
 	return m
 }
 
-func (m *indexOfInitialisms) isInitialism(key string) bool {
-	_, ok := m.index.Load(key)
-	return ok
-}
-
-func (m *indexOfInitialisms) add(key string, hasPlural bool) *indexOfInitialisms {
-	m.index.Store(key, hasPlural)
-	return m
-}
-
-func (m *indexOfInitialisms) sorted() (result []string) {
-	m.sortMutex.Lock()
-	defer m.sortMutex.Unlock()
-	m.index.Range(func(key, _ interface{}) bool {
-		k := key.(string)
+func (m *indexOfInitialisms) sorted() []string {
+	result := make([]string, 0, len(m.index))
+	for k := range m.index {
 		result = append(result, k)
-		return true
-	})
+	}
 	sort.Sort(sort.Reverse(byInitialism(result)))
-	return
+	return result
+}
+
+func (m *indexOfInitialisms) buildCache() {
+	m.build(m.sorted(), m.pluralForm)
+}
+
+// initialismsCache caches all needed pre-computed and converted initialism entries,
+// in the desired resolution order.
+type initialismsCache struct {
+	initialisms           []string
+	initialismsRunes      [][]rune
+	initialismsUpperCased [][]rune // initialisms cached in their trimmed, upper-cased version
+	initialismsPluralForm []pluralForm
+}
+
+func (c *initialismsCache) build(in []string, pluralfunc func(string) pluralForm) {
+	c.initialisms = in
+	c.initialismsRunes = asRunes(c.initialisms)
+	c.initialismsUpperCased = asUpperCased(c.initialisms)
+	c.initialismsPluralForm = asPluralForms(c.initialisms, pluralfunc)
 }
 
 // pluralForm denotes the kind of pluralization to be used for initialisms.
@@ -238,13 +198,19 @@ const (
 // support plural forms like CSSes or DNSes, however the mechanism could be extended to
 // do just that).
 func (m *indexOfInitialisms) pluralForm(key string) pluralForm {
-	v, ok := m.index.Load(key)
-	if !ok {
+	if _, ok := m.index[key]; !ok {
 		return notPlural
 	}
 
-	acceptsPlural := v.(bool)
-	if !acceptsPlural {
+	if strings.HasSuffix(strings.ToUpper(key), "S") {
+		return invariantPlural
+	}
+
+	if _, ok := m.index[key+"s"]; ok {
+		return invariantPlural
+	}
+
+	if _, ok := m.index[key+"S"]; ok {
 		return invariantPlural
 	}
 
@@ -269,4 +235,33 @@ func (s byInitialism) Less(i, j int) bool {
 	}
 
 	return s[i] < s[j]
+}
+
+func asRunes(in []string) [][]rune {
+	out := make([][]rune, len(in))
+	for i, initialism := range in {
+		out[i] = []rune(initialism)
+	}
+
+	return out
+}
+
+func asUpperCased(in []string) [][]rune {
+	out := make([][]rune, len(in))
+
+	for i, initialism := range in {
+		out[i] = []rune(upper(trim(initialism)))
+	}
+
+	return out
+}
+
+// asPluralForms bakes an index of pluralization support.
+func asPluralForms(in []string, pluralFunc func(string) pluralForm) []pluralForm {
+	out := make([]pluralForm, len(in))
+	for i, initialism := range in {
+		out[i] = pluralFunc(initialism)
+	}
+
+	return out
 }
