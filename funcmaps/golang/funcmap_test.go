@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
 // SPDX-License-Identifier: Apache-2.0
 
-package generator
+package golang
 
 import (
-	"bytes"
+	"os"
 	"testing"
 
 	"github.com/go-openapi/testify/v2/assert"
@@ -13,157 +13,79 @@ import (
 	"github.com/go-openapi/swag"
 )
 
-const (
-	// Test template environment.
-	singleTemplate        = `test`
-	multipleDefinitions   = `{{ define "T1" }}T1{{end}}{{ define "T2" }}T2{{end}}`
-	dependantTemplate     = `{{ template "T1" }}D1`
-	cirularDeps1          = `{{ define "T1" }}{{ .Name }}: {{ range .Children }}{{ template "T2" . }}{{end}}{{end}}{{template "T1" . }}`
-	cirularDeps2          = `{{ define "T2" }}{{if .Recurse }}{{ template "T1" . }}{{ else }}Children{{end}}{{end}}`
-	customHeader          = `custom header`
-	customMultiple        = `{{define "bindprimitiveparam" }}custom primitive{{end}}`
-	customNewTemplate     = `new template`
-	customExistingUsesNew = `{{define "bindprimitiveparam" }}{{ template "newtemplate" }}{{end}}`
-)
-
-func testFuncTpl() string {
-	return `
-Pascalize={{ pascalize "WeArePonies_Of_the_round table" }}
-Snakize={{ snakize "WeArePonies_Of_the_round table" }}
-Humanize={{ humanize "WeArePonies_Of_the_round table" }}
-PluralizeFirstWord={{ pluralizeFirstWord "pony of the round table" }}
-PluralizeFirstOfOneWord={{ pluralizeFirstWord "dwarf" }}
-PluralizeFirstOfNoWord={{ pluralizeFirstWord "" }}
-DropPackage={{ dropPackage "prefix.suffix" }}
-DropNoPackage={{ dropPackage "suffix" }}
-DropEmptyPackage={{ dropPackage "" }}
-ContainsString={{ contains .DependsOn "x"}}
-DoesNotContainString={{ contains .DependsOn "y"}}
-PadSurround1={{ padSurround "padme" "-" 3 12}}
-PadSurround2={{ padSurround "padme" "-" 0 12}}
-Json={{ json .DefaultImports }}
-PrettyJson={{ prettyjson . }}
-Snakize1={{ snakize "endingInOsNameLinux" }}
-Snakize2={{ snakize "endingInArchNameLinuxAmd64" }}
-Snakize3={{ snakize "endingInTest" }}
-toPackage1={{ toPackage "a/b-c/d-e" }}
-toPackage2={{ toPackage "a.a/b_c/d_e" }}
-toPackage3={{ toPackage "d_e" }}
-toPackage4={{ toPackage "d-e" }}
-toPackageName={{ toPackageName "d-e/f-g" }}
-PascalizeSpecialChar1={{ pascalize "+1" }}
-PascalizeSpecialChar2={{ pascalize "-1" }}
-PascalizeSpecialChar3={{ pascalize "1" }}
-PascalizeSpecialChar4={{ pascalize "-" }}
-PascalizeSpecialChar5={{ pascalize "+" }}
-PascalizeCleanupEnumVariant1={{ pascalize (cleanupEnumVariant "2.4Ghz") }}
-Dict={{ template "dictTemplate" dict "Animal" "Pony" "Shape" "round" "Furniture" "table" }}
-{{ define "dictTemplate" }}{{ .Animal }} of the {{ .Shape }} {{ .Furniture }}{{ end }}
-`
+func TestMain(m *testing.M) {
+	swag.GoNamePrefixFunc = PrefixForName //nolint:staticcheck // tracked for migration to mangling.WithGoNamePrefixFunc
+	os.Exit(m.Run())
 }
 
-// Exercises FuncMap
-// Just running basic tests to make sure the function map works and all functions are available as expected.
-// More complete unit tests are provided by go-openapi/swag.
-func TestTemplates_FuncMap(t *testing.T) {
-	defer discardOutput()()
+func TestFuncMap(t *testing.T) {
+	fm := FuncMap()
 
-	funcTpl := testFuncTpl()
-
-	err := templates.AddFile("functpl", funcTpl)
-	require.NoError(t, err)
-
-	templ, err := templates.Get("functpl")
-	require.NoError(t, err)
-
-	opts := opts()
-	// executes template against model definitions
-	genModel, err := getModelEnvironment("../fixtures/codegen/todolist.models.yml", opts)
-	require.NoError(t, err)
-
-	genModel.DependsOn = []string{"x", "z"}
-	rendered := bytes.NewBuffer(nil)
-	err = templ.Execute(rendered, genModel)
-	require.NoError(t, err)
-
-	assert.StringContainsT(t, rendered.String(), "Pascalize=WeArePoniesOfTheRoundTable\n")
-	assert.StringContainsT(t, rendered.String(), "Snakize=we_are_ponies_of_the_round_table\n")
-	assert.StringContainsT(t, rendered.String(), "Humanize=we are ponies of the round table\n")
-	assert.StringContainsT(t, rendered.String(), "PluralizeFirstWord=ponies of the round table\n")
-	assert.StringContainsT(t, rendered.String(), "PluralizeFirstOfOneWord=dwarves\n")
-	assert.StringContainsT(t, rendered.String(), "PluralizeFirstOfNoWord=\n")
-	assert.StringContainsT(t, rendered.String(), "DropPackage=suffix\n")
-	assert.StringContainsT(t, rendered.String(), "DropNoPackage=suffix\n")
-	assert.StringContainsT(t, rendered.String(), "DropEmptyPackage=\n")
-	assert.StringContainsT(t, rendered.String(), "DropEmptyPackage=\n")
-	assert.StringContainsT(t, rendered.String(), "ContainsString=true\n")
-	assert.StringContainsT(t, rendered.String(), "DoesNotContainString=false\n")
-	assert.StringContainsT(t, rendered.String(), "PadSurround1=-,-,-,padme,-,-,-,-,-,-,-,-\n")
-	assert.StringContainsT(t, rendered.String(), "PadSurround2=padme,-,-,-,-,-,-,-,-,-,-,-\n")
-	assert.StringContainsT(t, rendered.String(), `Json={"errors":"github.com/go-openapi/errors","runtime":"github.com/go-openapi/runtime","strfmt":"github.com/go-openapi/strfmt","swag":"github.com/go-openapi/swag","validate":"github.com/go-openapi/validate"}`)
-	assert.StringContainsT(t, rendered.String(), "\"TargetImportPath\": \"github.com/go-swagger/go-swagger/generator\"")
-	assert.StringContainsT(t, rendered.String(), "Snakize1=ending_in_os_name_linux_swagger\n")
-	assert.StringContainsT(t, rendered.String(), "Snakize2=ending_in_arch_name_linux_amd64_swagger\n")
-	assert.StringContainsT(t, rendered.String(), "Snakize3=ending_in_test_swagger\n")
-	assert.StringContainsT(t, rendered.String(), "toPackage1=a/b-c/d_e\n")
-	assert.StringContainsT(t, rendered.String(), "toPackage2=a.a/b_c/d_e\n")
-	assert.StringContainsT(t, rendered.String(), "toPackage3=d_e\n")
-	assert.StringContainsT(t, rendered.String(), "toPackage4=d_e\n")
-	assert.StringContainsT(t, rendered.String(), "toPackageName=f_g\n")
-	assert.StringContainsT(t, rendered.String(), "PascalizeSpecialChar1=Plus1\n")
-	assert.StringContainsT(t, rendered.String(), "PascalizeSpecialChar2=Minus1\n")
-	assert.StringContainsT(t, rendered.String(), "PascalizeSpecialChar3=Nr1\n")
-	assert.StringContainsT(t, rendered.String(), "PascalizeSpecialChar4=Minus\n")
-	assert.StringContainsT(t, rendered.String(), "PascalizeSpecialChar5=Plus\n")
-	assert.StringContainsT(t, rendered.String(), "PascalizeCleanupEnumVariant1=Nr2Dot4Ghz")
-	assert.StringContainsT(t, rendered.String(), "Dict=Pony of the round table\n")
+	// Verify all expected keys are present
+	for _, key := range []string{
+		"pascalize", "camelize", "humanize", "dasherize",
+		"pluralizeFirstWord", "json", "prettyjson",
+		"hasInsecure", "hasSecure",
+		"dropPackage", "containsPkgStr", "contains",
+		"padSurround", "joinFilePath", "joinPath",
+		"comment", "blockcomment", "inspect",
+		"cleanPath", "mediaTypeName", "mediaGoName",
+		"dict", "isInteger", "hasPrefix", "stringContains",
+		"trimSpace", "mdBlock", "httpStatus",
+		"cleanupEnumVariant", "gt0",
+		"escapeBackticks",
+		"flagNameVar", "flagValueVar", "flagDefaultVar", "flagModelVar", "flagDescriptionVar",
+		"printGoLiteral",
+	} {
+		assert.NotNil(t, fm[key], "expected funcmap key %q", key)
+	}
 }
 
-func TestFuncMap_DropPackage(t *testing.T) {
-	assert.EqualT(t, "trail", dropPackage("base.trail"))
-	assert.EqualT(t, "trail", dropPackage("base.another.trail"))
-	assert.EqualT(t, "trail", dropPackage("trail"))
+func TestDropPackage(t *testing.T) {
+	assert.EqualT(t, "trail", DropPackage("base.trail"))
+	assert.EqualT(t, "trail", DropPackage("base.another.trail"))
+	assert.EqualT(t, "trail", DropPackage("trail"))
 }
 
-func TestFuncMap_Pascalize(t *testing.T) {
-	assert.EqualT(t, "Plus1", pascalize("+1"))
-	assert.EqualT(t, "Plus", pascalize("+"))
-	assert.EqualT(t, "Minus1", pascalize("-1"))
-	assert.EqualT(t, "Minus", pascalize("-"))
-	assert.EqualT(t, "Nr8", pascalize("8"))
-	assert.EqualT(t, "Asterisk", pascalize("*"))
-	assert.EqualT(t, "ForwardSlash", pascalize("/"))
-	assert.EqualT(t, "EqualSign", pascalize("="))
+func TestPascalize(t *testing.T) {
+	assert.EqualT(t, "Plus1", Pascalize("+1"))
+	assert.EqualT(t, "Plus", Pascalize("+"))
+	assert.EqualT(t, "Minus1", Pascalize("-1"))
+	assert.EqualT(t, "Minus", Pascalize("-"))
+	assert.EqualT(t, "Nr8", Pascalize("8"))
+	assert.EqualT(t, "Asterisk", Pascalize("*"))
+	assert.EqualT(t, "ForwardSlash", Pascalize("/"))
+	assert.EqualT(t, "EqualSign", Pascalize("="))
 
-	assert.EqualT(t, "Hello", pascalize("+hello"))
+	assert.EqualT(t, "Hello", Pascalize("+hello"))
 
 	// other values from swag rules
-	assert.EqualT(t, "At8", pascalize("@8"))
-	assert.EqualT(t, "AtHello", pascalize("@hello"))
-	assert.EqualT(t, "Bang8", pascalize("!8"))
-	assert.EqualT(t, "At", pascalize("@"))
+	assert.EqualT(t, "At8", Pascalize("@8"))
+	assert.EqualT(t, "AtHello", Pascalize("@hello"))
+	assert.EqualT(t, "Bang8", Pascalize("!8"))
+	assert.EqualT(t, "At", Pascalize("@"))
 
 	// # values
-	assert.EqualT(t, "Hello", pascalize("#hello"))
-	assert.EqualT(t, "BangHello", pascalize("#!hello"))
-	assert.EqualT(t, "HashTag8", pascalize("#8"))
-	assert.EqualT(t, "HashTag", pascalize("#"))
+	assert.EqualT(t, "Hello", Pascalize("#hello"))
+	assert.EqualT(t, "BangHello", Pascalize("#!hello"))
+	assert.EqualT(t, "HashTag8", Pascalize("#8"))
+	assert.EqualT(t, "HashTag", Pascalize("#"))
 
 	// single '_'
-	assert.EqualT(t, "Nr", pascalize("_"))
-	assert.EqualT(t, "Hello", pascalize("_hello"))
+	assert.EqualT(t, "Nr", Pascalize("_"))
+	assert.EqualT(t, "Hello", Pascalize("_hello"))
 
 	// remove spaces
-	assert.EqualT(t, "HelloWorld", pascalize("# hello world"))
-	assert.EqualT(t, "HashTag8HelloWorld", pascalize("# 8 hello world"))
+	assert.EqualT(t, "HelloWorld", Pascalize("# hello world"))
+	assert.EqualT(t, "HashTag8HelloWorld", Pascalize("# 8 hello world"))
 
-	assert.EqualT(t, "Empty", pascalize(""))
+	assert.EqualT(t, "Empty", Pascalize(""))
 }
 
-func TestFuncMap_AsJSON(t *testing.T) {
+func TestAsJSON(t *testing.T) {
 	for _, jsonFunc := range []func(any) (string, error){
-		asJSON,
-		asPrettyJSON,
+		AsJSON,
+		AsPrettyJSON,
 	} {
 		res, err := jsonFunc(struct {
 			A string `json:"a"`
@@ -180,7 +102,7 @@ func TestFuncMap_AsJSON(t *testing.T) {
 	}
 }
 
-func TestFuncMap_Dict(t *testing.T) {
+func TestDict(t *testing.T) {
 	d, err := dict("a", "b", "c", "d")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"a": "b", "c": "d"}, d)
@@ -207,18 +129,18 @@ func TestIsInteger(t *testing.T) {
 		int32(4),
 		int64(4),
 		int(4),
-		swag.Int(4),
-		swag.Int32(4),
-		swag.Int64(4),
-		swag.Uint(4),
-		swag.Uint32(4),
-		swag.Uint64(4),
+		swag.Int(4),    //nolint:staticcheck // have to migrate to the new swag API
+		swag.Int32(4),  //nolint:staticcheck // have to migrate to the new swag API
+		swag.Int64(4),  //nolint:staticcheck // have to migrate to the new swag API
+		swag.Uint(4),   //nolint:staticcheck // have to migrate to the new swag API
+		swag.Uint32(4), //nolint:staticcheck // have to migrate to the new swag API
+		swag.Uint64(4), //nolint:staticcheck // have to migrate to the new swag API
 		float32(12),
 		float64(12),
-		swag.Float32(12),
-		swag.Float64(12),
+		swag.Float32(12), //nolint:staticcheck // have to migrate to the new swag API
+		swag.Float64(12), //nolint:staticcheck // have to migrate to the new swag API
 		"12",
-		swag.String("12"),
+		swag.String("12"), //nolint:staticcheck // have to migrate to the new swag API
 	} {
 		val := anInteger
 		require.Truef(t, isInteger(val), "expected %#v to be detected an integer value", val)
@@ -227,15 +149,15 @@ func TestIsInteger(t *testing.T) {
 	for _, notAnInteger := range []any{
 		float32(12.5),
 		float64(12.5),
-		swag.Float32(12.5),
-		swag.Float64(12.5),
+		swag.Float32(12.5), //nolint:staticcheck // have to migrate to the new swag API
+		swag.Float64(12.5), //nolint:staticcheck // have to migrate to the new swag API
 		[]string{"a"},
 		struct{}{},
 		nil,
 		map[string]int{"a": 1},
 		"abc",
 		"2.34",
-		swag.String("2.34"),
+		swag.String("2.34"), //nolint:staticcheck // have to migrate to the new swag API
 		nilString,
 		nilInt,
 		nilFloat,
@@ -251,24 +173,131 @@ func TestGt0(t *testing.T) {
 	require.FalseT(t, gt0(nil))
 }
 
-func TestIssue2821(t *testing.T) {
-	tpl := `
-Pascalize={{ pascalize . }}
-Camelize={{ camelize . }}
-`
+func TestMediaMime(t *testing.T) {
+	assert.EqualT(t, "application/json", MediaMime("application/json"))
+	assert.EqualT(t, "application/json", MediaMime("application/json;param=1;param=2"))
+}
 
-	require.NoError(t,
-		templates.AddFile("functpl", tpl),
-	)
+func TestMediaGoName(t *testing.T) {
+	assert.EqualT(t, "StarStar", MediaGoName("*/*"))
+}
 
-	compiled, err := templates.Get("functpl")
-	require.NoError(t, err)
+func TestContainsPkgStr(t *testing.T) {
+	assert.TrueT(t, ContainsPkgStr("models.MyType"))
+	assert.FalseT(t, ContainsPkgStr("MyType"))
+	assert.FalseT(t, ContainsPkgStr(""))
+}
 
-	rendered := bytes.NewBuffer(nil)
-	require.NoError(t,
-		compiled.Execute(rendered, "get$ref"),
-	)
+func TestPadComment(t *testing.T) {
+	assert.EqualT(t, "line1\n// line2\n// line3", padComment("line1\nline2\nline3"))
+	assert.EqualT(t, "line1\n//\tline2", padComment("line1\nline2", "\t"))
+	assert.EqualT(t, "single", padComment("single"))
+}
 
-	assert.StringContainsT(t, rendered.String(), "Pascalize=GetDollarRef\n")
-	assert.StringContainsT(t, rendered.String(), "Camelize=getDollarRef\n")
+func TestBlockComment(t *testing.T) {
+	assert.EqualT(t, "before [*]/ after", blockComment("before */ after"))
+	assert.EqualT(t, "no end marker", blockComment("no end marker"))
+}
+
+func TestHttpStatus(t *testing.T) {
+	assert.EqualT(t, "OK", httpStatus(200))
+	assert.EqualT(t, "Not Found", httpStatus(404))
+	assert.EqualT(t, "Status 999", httpStatus(999))
+}
+
+func TestMarkdownBlock(t *testing.T) {
+	assert.EqualT(t, "line1</br>line2", markdownBlock("line1\nline2"))
+	assert.EqualT(t, "line1</br>line2", markdownBlock("line1\r\nline2"))
+	assert.EqualT(t, "trimmed", markdownBlock("  trimmed  "))
+}
+
+func TestPrefixForName_Letter(t *testing.T) {
+	// unicode.IsLetter branch: returns ""
+	assert.EqualT(t, "", PrefixForName("hello"))
+}
+
+func TestReplaceSpecialChar(t *testing.T) {
+	assert.EqualT(t, "-Plus-", replaceSpecialChar('+'))
+	assert.EqualT(t, "-Dash-", replaceSpecialChar('-'))
+	assert.EqualT(t, "-Hashtag-", replaceSpecialChar('#'))
+	assert.EqualT(t, "-Dot-", replaceSpecialChar('.'))
+	assert.EqualT(t, "x", replaceSpecialChar('x'))
+}
+
+func TestPluralizeFirstWord(t *testing.T) {
+	assert.EqualT(t, "ponies of the round table", pluralizeFirstWord("pony of the round table"))
+	assert.EqualT(t, "dwarves", pluralizeFirstWord("dwarf"))
+	assert.EqualT(t, "", pluralizeFirstWord(""))
+}
+
+func TestPadSurround(t *testing.T) {
+	assert.EqualT(t, "-,-,-,padme,-,-,-,-,-,-,-,-", padSurround("padme", "-", 3, 12))
+	assert.EqualT(t, "padme,-,-,-,-,-,-,-,-,-,-,-", padSurround("padme", "-", 0, 12))
+	assert.EqualT(t, "only", padSurround("only", "-", 0, 1))
+}
+
+func TestCleanupEnumVariant(t *testing.T) {
+	assert.EqualT(t, "2-Dot-4Ghz", cleanupEnumVariant("2.4Ghz"))
+	assert.EqualT(t, "-Plus-1", cleanupEnumVariant("+1"))
+	assert.EqualT(t, "a-Dash-b-Hashtag-c", cleanupEnumVariant("a-b#c"))
+	assert.EqualT(t, "plain", cleanupEnumVariant("plain"))
+}
+
+func TestFuncMap_HasInsecure(t *testing.T) {
+	fm := FuncMap()
+	fn, ok := fm["hasInsecure"].(func([]string) bool)
+	require.TrueT(t, ok)
+
+	assert.TrueT(t, fn([]string{"http"}))
+	assert.TrueT(t, fn([]string{"ws"}))
+	assert.FalseT(t, fn([]string{"https"}))
+	assert.FalseT(t, fn([]string{"wss"}))
+}
+
+func TestFuncMap_HasSecure(t *testing.T) {
+	fm := FuncMap()
+	fn, ok := fm["hasSecure"].(func([]string) bool)
+	require.TrueT(t, ok)
+
+	assert.TrueT(t, fn([]string{"https"}))
+	assert.TrueT(t, fn([]string{"wss"}))
+	assert.FalseT(t, fn([]string{"http"}))
+	assert.FalseT(t, fn([]string{"ws"}))
+}
+
+func TestFuncMap_EscapeBackticks(t *testing.T) {
+	fm := FuncMap()
+	fn, ok := fm["escapeBackticks"].(func(string) string)
+	require.TrueT(t, ok)
+
+	assert.EqualT(t, "no ticks", fn("no ticks"))
+	assert.EqualT(t, "has`+\"`\"+`tick", fn("has`tick"))
+}
+
+func TestFuncMap_FlagVars(t *testing.T) {
+	fm := FuncMap()
+
+	for _, tc := range []struct {
+		key      string
+		expected string
+	}{
+		{"flagNameVar", "flagMyFieldName"},
+		{"flagValueVar", "flagMyFieldValue"},
+		{"flagDefaultVar", "flagMyFieldDefault"},
+		{"flagModelVar", "flagMyFieldModel"},
+		{"flagDescriptionVar", "flagMyFieldDescription"},
+	} {
+		fn, ok := fm[tc.key].(func(string) string)
+		require.TrueT(t, ok)
+		assert.EqualT(t, tc.expected, fn("myField"))
+	}
+}
+
+func TestFuncMap_PrintGoLiteral(t *testing.T) {
+	fm := FuncMap()
+	fn, ok := fm["printGoLiteral"].(func(any) string)
+	require.TrueT(t, ok)
+
+	assert.EqualT(t, `"hello"`, fn("hello"))
+	assert.EqualT(t, "42", fn(42))
 }

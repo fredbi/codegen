@@ -1,35 +1,186 @@
 // SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
 // SPDX-License-Identifier: Apache-2.0
 
-package generator
+// Package golang provides the Go-specific template function map used by the
+// go-swagger code generator. Functions defined here are pure utilities with
+// no dependency on the generator's own types (GenSchema, GenOperation, etc.).
+package golang
 
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"path"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"text/template"
 	"unicode"
+
+	"github.com/Masterminds/sprig/v3"
+	"github.com/kr/pretty"
 
 	"github.com/go-openapi/inflect"
 	"github.com/go-openapi/runtime"
 	"github.com/go-openapi/swag"
 )
 
-func asJSON(data any) (string, error) {
+// FuncMap returns a template.FuncMap containing all Go-specific template
+// functions that are independent of generator types. Callers typically
+// merge additional entries (e.g. LanguageOpts-dependent or type-dependent
+// functions) on top.
+func FuncMap() template.FuncMap {
+	f := sprig.TxtFuncMap()
+
+	extra := template.FuncMap{
+		"pascalize":          Pascalize,
+		"camelize":           swag.ToJSONName,       //nolint:staticcheck // tracked for migration to mangling.NameMangler
+		"humanize":           swag.ToHumanNameLower, //nolint:staticcheck // tracked for migration to mangling.NameMangler
+		"dasherize":          swag.ToCommandName,    //nolint:staticcheck // tracked for migration to mangling.NameMangler
+		"pluralizeFirstWord": pluralizeFirstWord,
+		"json":               AsJSON,
+		"prettyjson":         AsPrettyJSON,
+		"hasInsecure": func(arg []string) bool {
+			return swag.ContainsStringsCI(arg, "http") || swag.ContainsStringsCI(arg, "ws") //nolint:staticcheck // tracked for migration
+		},
+		"hasSecure": func(arg []string) bool {
+			return swag.ContainsStringsCI(arg, "https") || swag.ContainsStringsCI(arg, "wss") //nolint:staticcheck // tracked for migration
+		},
+		"dropPackage":        DropPackage,
+		"containsPkgStr":     ContainsPkgStr,
+		"contains":           swag.ContainsStrings, //nolint:staticcheck // tracked for migration
+		"padSurround":        padSurround,
+		"joinFilePath":       filepath.Join,
+		"joinPath":           path.Join,
+		"comment":            padComment,
+		"blockcomment":       blockComment,
+		"inspect":            pretty.Sprint,
+		"cleanPath":          path.Clean,
+		"mediaTypeName":      MediaMime,
+		"mediaGoName":        MediaGoName,
+		"dict":               dict,
+		"isInteger":          isInteger,
+		"hasPrefix":          strings.HasPrefix,
+		"stringContains":     strings.Contains,
+		"trimSpace":          strings.TrimSpace,
+		"mdBlock":            markdownBlock,
+		"httpStatus":         httpStatus,
+		"cleanupEnumVariant": cleanupEnumVariant,
+		"gt0":                gt0,
+		"escapeBackticks": func(arg string) string {
+			return strings.ReplaceAll(arg, "`", "`+\"`\"+`")
+		},
+		"flagNameVar": func(in string) string {
+			return fmt.Sprintf("flag%sName", Pascalize(in))
+		},
+		"flagValueVar": func(in string) string {
+			return fmt.Sprintf("flag%sValue", Pascalize(in))
+		},
+		"flagDefaultVar": func(in string) string {
+			return fmt.Sprintf("flag%sDefault", Pascalize(in))
+		},
+		"flagModelVar": func(in string) string {
+			return fmt.Sprintf("flag%sModel", Pascalize(in))
+		},
+		"flagDescriptionVar": func(in string) string {
+			return fmt.Sprintf("flag%sDescription", Pascalize(in))
+		},
+		"printGoLiteral": func(in any) string {
+			return interfaceReplacer.Replace(fmt.Sprintf("%#v", in))
+		},
+	}
+
+	maps.Copy(f, extra)
+
+	return f
+}
+
+// Pascalize converts a name to Go PascalCase, handling special prefix characters.
+func Pascalize(arg string) string {
+	runes := []rune(arg)
+	switch len(runes) {
+	case 0:
+		return "Empty"
+	case 1:
+		switch runes[0] {
+		case '+', '-', '#', '_', '*', '/', '=':
+			return PrefixForName(arg)
+		}
+	}
+
+	return swag.ToGoName(swag.ToGoName(arg)) //nolint:staticcheck // tracked for migration to mangling.NameMangler
+}
+
+// PrefixForName returns a human-readable prefix for names starting with
+// special characters. It is used as [swag.GoNamePrefixFunc].
+func PrefixForName(arg string) string {
+	first := []rune(arg)[0]
+	if len(arg) == 0 || unicode.IsLetter(first) {
+		return ""
+	}
+
+	switch first {
+	case '+':
+		return "Plus"
+	case '-':
+		return "Minus"
+	case '#':
+		return "HashTag"
+	case '*':
+		return "Asterisk"
+	case '/':
+		return "ForwardSlash"
+	case '=':
+		return "EqualSign"
+	}
+
+	return "Nr"
+}
+
+func replaceSpecialChar(in rune) string {
+	switch in {
+	case '.':
+		return "-Dot-"
+	case '+':
+		return "-Plus-"
+	case '-':
+		return "-Dash-"
+	case '#':
+		return "-Hashtag-"
+	}
+
+	return string(in)
+}
+
+func cleanupEnumVariant(in string) string {
+	var replaced strings.Builder
+
+	for _, char := range in {
+		replaced.WriteString(replaceSpecialChar(char))
+	}
+
+	return replaced.String()
+}
+
+// AsJSON marshals data to a compact JSON string.
+func AsJSON(data any) (string, error) {
 	b, err := json.Marshal(data)
 	if err != nil {
 		return "", err
 	}
+
 	return string(b), nil
 }
 
-func asPrettyJSON(data any) (string, error) {
+// AsPrettyJSON marshals data to an indented JSON string.
+func AsPrettyJSON(data any) (string, error) {
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return "", err
 	}
+
 	return string(b), nil
 }
 
@@ -42,14 +193,15 @@ func pluralizeFirstWord(arg string) string {
 	return inflect.Pluralize(sentence[0]) + " " + strings.Join(sentence[1:], " ")
 }
 
-func dropPackage(str string) string {
+// DropPackage returns the last component of a dot-separated name.
+func DropPackage(str string) string {
 	parts := strings.Split(str, ".")
 	return parts[len(parts)-1]
 }
 
-// return true if the GoType str contains pkg. For example "model.MyType" -> true, "MyType" -> false.
-func containsPkgStr(str string) bool {
-	dropped := dropPackage(str)
+// ContainsPkgStr returns true if str contains a package qualifier (e.g. "model.MyType").
+func ContainsPkgStr(str string) bool {
+	dropped := DropPackage(str)
 	return dropped != str
 }
 
@@ -75,78 +227,17 @@ func padSurround(entry, padWith string, i, ln int) string {
 }
 
 func padComment(str string, pads ...string) string {
-	// pads specifes padding to indent multi line comments.Defaults to one space
 	pad := " "
 	lines := strings.Split(str, "\n")
 	if len(pads) > 0 {
 		pad = strings.Join(pads, "")
 	}
-	return (strings.Join(lines, "\n//"+pad))
+
+	return strings.Join(lines, "\n//"+pad)
 }
 
 func blockComment(str string) string {
 	return strings.ReplaceAll(str, "*/", "[*]/")
-}
-
-func pascalize(arg string) string {
-	runes := []rune(arg)
-	switch len(runes) {
-	case 0:
-		return "Empty"
-	case 1: // handle special case when we have a single rune that is not handled by swag.ToGoName
-		switch runes[0] {
-		case '+', '-', '#', '_', '*', '/', '=': // those cases are handled differently than swag utility
-			return prefixForName(arg)
-		}
-	}
-	return swag.ToGoName(swag.ToGoName(arg)) // want to remove spaces
-}
-
-func prefixForName(arg string) string {
-	first := []rune(arg)[0]
-	if len(arg) == 0 || unicode.IsLetter(first) {
-		return ""
-	}
-	switch first {
-	case '+':
-		return "Plus"
-	case '-':
-		return "Minus"
-	case '#':
-		return "HashTag"
-	case '*':
-		return "Asterisk"
-	case '/':
-		return "ForwardSlash"
-	case '=':
-		return "EqualSign"
-		// other cases ($,@ etc..) handled by swag.ToGoName
-	}
-	return "Nr"
-}
-
-func replaceSpecialChar(in rune) string {
-	switch in {
-	case '.':
-		return "-Dot-"
-	case '+':
-		return "-Plus-"
-	case '-':
-		return "-Dash-"
-	case '#':
-		return "-Hashtag-"
-	}
-	return string(in)
-}
-
-func cleanupEnumVariant(in string) string {
-	var replaced strings.Builder
-
-	for _, char := range in {
-		replaced.WriteString(replaceSpecialChar(char))
-	}
-
-	return replaced.String()
 }
 
 func dict(values ...any) (map[string]any, error) {
@@ -162,14 +253,13 @@ func dict(values ...any) (map[string]any, error) {
 		if !ok {
 			return nil, fmt.Errorf("expected string key, got %+v", values[i])
 		}
-		dict[key] = values[i+1]
+		dict[key] = values[i+1] //nolint:gosec // bounds checked by modulo guard above
 	}
 
 	return dict, nil
 }
 
 func isInteger(arg any) bool {
-	// is integer determines if a value may be represented by an integer
 	switch val := arg.(type) {
 	case int8, int16, int32, int, int64, uint8, uint16, uint32, uint, uint64:
 		return true
@@ -198,192 +288,22 @@ func isInteger(arg any) bool {
 	}
 }
 
-func resolvedDocCollectionFormat(cf string, child *GenItems) string {
-	if child == nil {
-		return cf
-	}
-	ccf := cf
-	if ccf == "" {
-		ccf = "csv"
-	}
-	rcf := resolvedDocCollectionFormat(child.CollectionFormat, child.Child)
-	if rcf == "" {
-		return ccf
-	}
-	return ccf + "|" + rcf
-}
-
-func resolvedDocType(tn, ft string, child *GenItems) string {
-	if tn == array {
-		if child == nil {
-			return "[]any"
-		}
-		return "[]" + resolvedDocType(child.SwaggerType, child.SwaggerFormat, child.Child)
-	}
-
-	if ft != "" {
-		if doc, ok := docFormat[ft]; ok {
-			return doc
-		}
-		return fmt.Sprintf("%s (formatted %s)", ft, tn)
-	}
-
-	return tn
-}
-
-func resolvedDocSchemaType(tn, ft string, child *GenSchema) string {
-	if tn == array {
-		if child == nil {
-			return "[]any"
-		}
-		return "[]" + resolvedDocSchemaType(child.SwaggerType, child.SwaggerFormat, child.Items)
-	}
-
-	if tn == object {
-		if child == nil || child.ElemType == nil {
-			return "map of any"
-		}
-		if child.IsMap {
-			return "map of " + resolvedDocElemType(child.SwaggerType, child.SwaggerFormat, &child.resolvedType)
-		}
-
-		return child.GoType
-	}
-
-	if ft != "" {
-		if doc, ok := docFormat[ft]; ok {
-			return doc
-		}
-		return fmt.Sprintf("%s (formatted %s)", ft, tn)
-	}
-
-	return tn
-}
-
-func resolvedDocElemType(tn, ft string, schema *resolvedType) string {
-	if schema == nil {
-		return ""
-	}
-	if schema.IsMap {
-		return "map of " + resolvedDocElemType(schema.ElemType.SwaggerType, schema.ElemType.SwaggerFormat, schema.ElemType)
-	}
-
-	if schema.IsArray {
-		return "[]" + resolvedDocElemType(schema.ElemType.SwaggerType, schema.ElemType.SwaggerFormat, schema.ElemType)
-	}
-
-	if ft != "" {
-		if doc, ok := docFormat[ft]; ok {
-			return doc
-		}
-		return fmt.Sprintf("%s (formatted %s)", ft, tn)
-	}
-
-	return tn
-}
-
 func httpStatus(code int) string {
 	if name, ok := runtime.Statuses[code]; ok {
 		return name
 	}
-	// non-standard codes deserve some name
+
 	return fmt.Sprintf("Status %d", code)
 }
 
 func gt0(in *int64) bool {
-	// gt0 returns true if the *int64 points to a value > 0
-	// NOTE: plain {{ gt .MinProperties 0 }} just refuses to work normally
-	// with a pointer
 	return in != nil && *in > 0
 }
 
-func errorPath(in any) (string, error) {
-	// For schemas:
-	// errorPath returns an empty string litteral when the schema path is empty.
-	// It provides a shorthand for template statements such as:
-	// {{ if .Path }}{{ .Path }}{{ else }}" "{{ end }},
-	// which becomes {{ path . }}
-	//
-	// When called for a GenParameter, GenResponse or GenOperation object, it just
-	// returns Path.
-	//
-	// Extra behavior for schemas, when the generation option RootedErroPath is enabled:
-	// In the case of arrays with an empty path, it adds the type name as the path "root",
-	// so consumers of reported errors get an idea of the originator.
-
-	var pth string
-	rooted := func(schema GenSchema) string {
-		if schema.WantsRootedErrorPath && schema.Path == "" && (schema.IsArray || schema.IsMap) {
-			return `"[` + schema.Name + `]"`
-		}
-
-		return schema.Path
-	}
-
-	switch schema := in.(type) {
-	case GenSchema:
-		pth = rooted(schema)
-	case *GenSchema:
-		if schema == nil {
-			break
-		}
-		pth = rooted(*schema)
-	case GenDefinition:
-		pth = rooted(schema.GenSchema)
-	case *GenDefinition:
-		if schema == nil {
-			break
-		}
-		pth = rooted(schema.GenSchema)
-	case GenParameter:
-		pth = schema.Path
-
-	// unchanged Path if called with other types
-	case *GenParameter:
-		if schema == nil {
-			break
-		}
-		pth = schema.Path
-	case GenResponse:
-		pth = schema.Path
-	case *GenResponse:
-		if schema == nil {
-			break
-		}
-		pth = schema.Path
-	case GenOperation:
-		pth = schema.Path
-	case *GenOperation:
-		if schema == nil {
-			break
-		}
-		pth = schema.Path
-	case GenItems:
-		pth = schema.Path
-	case *GenItems:
-		if schema == nil {
-			break
-		}
-		pth = schema.Path
-	case GenHeader:
-		pth = schema.Path
-	case *GenHeader:
-		if schema == nil {
-			break
-		}
-		pth = schema.Path
-	default:
-		return "", fmt.Errorf("errorPath should be called with GenSchema or GenDefinition, but got %T", schema)
-	}
-
-	if pth == "" {
-		return `""`, nil
-	}
-
-	return pth, nil
-}
-
-const mdNewLine = "</br>"
+const (
+	mdNewLine      = "</br>"
+	mimeParamParts = 2
+)
 
 var (
 	mdNewLineReplacer = strings.NewReplacer("\r\n", mdNewLine, "\n", mdNewLine, "\r", mdNewLine)
@@ -394,4 +314,15 @@ func markdownBlock(in string) string {
 	in = strings.TrimSpace(in)
 
 	return mdNewLineReplacer.Replace(in)
+}
+
+// MediaMime extracts the MIME type from a media type string, stripping
+// any parameters after the first semicolon.
+func MediaMime(orig string) string {
+	return strings.SplitN(orig, ";", mimeParamParts)[0]
+}
+
+// MediaGoName converts a MIME media type string to a Go-style PascalCase name.
+func MediaGoName(media string) string {
+	return Pascalize(strings.ReplaceAll(media, "*", "Star"))
 }
