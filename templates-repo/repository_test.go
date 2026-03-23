@@ -1,446 +1,396 @@
 // SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
 // SPDX-License-Identifier: Apache-2.0
 
-package generator
+package templatesrepo
 
 import (
 	"bytes"
-	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-openapi/testify/v2/assert"
 	"github.com/go-openapi/testify/v2/require"
-
-	"github.com/go-openapi/loads"
-	"github.com/go-openapi/spec"
 )
 
-func TestTemplates_CustomTemplates(t *testing.T) {
-	var buf bytes.Buffer
-	headerTempl, err := templates.Get("bindprimitiveparam")
-	require.NoError(t, err)
-
-	err = headerTempl.Execute(&buf, nil)
-	require.NoError(t, err)
-	require.NotNil(t, buf)
-	assert.EqualT(t, "\n", buf.String())
-
-	buf.Reset()
-	err = templates.AddFile("bindprimitiveparam", customHeader)
-	require.NoError(t, err)
-
-	headerTempl, err = templates.Get("bindprimitiveparam")
-	require.NoError(t, err)
-	assert.NotNil(t, headerTempl)
-
-	err = headerTempl.Execute(&buf, nil)
-	require.NoError(t, err)
-	assert.EqualT(t, "custom header", buf.String())
-}
-
-func TestTemplates_CustomTemplatesMultiple(t *testing.T) {
-	var buf bytes.Buffer
-
-	err := templates.AddFile("differentFileName", customMultiple)
-	require.NoError(t, err)
-
-	headerTempl, err := templates.Get("bindprimitiveparam")
-	require.NoError(t, err)
-
-	err = headerTempl.Execute(&buf, nil)
-	require.NoError(t, err)
-
-	assert.EqualT(t, "custom primitive", buf.String())
-}
-
-func TestTemplates_CustomNewTemplates(t *testing.T) {
-	var buf bytes.Buffer
-
-	err := templates.AddFile("newtemplate", customNewTemplate)
-	require.NoError(t, err)
-
-	err = templates.AddFile("existingUsesNew", customExistingUsesNew)
-	require.NoError(t, err)
-
-	headerTempl, err := templates.Get("bindprimitiveparam")
-	require.NoError(t, err)
-
-	err = headerTempl.Execute(&buf, nil)
-	require.NoError(t, err)
-
-	assert.EqualT(t, "new template", buf.String())
-}
-
-func TestTemplates_RepoLoadingTemplates(t *testing.T) {
+func TestLoadDir_EmptyPath(t *testing.T) {
 	repo := NewRepository(nil)
 
-	err := repo.AddFile("simple", singleTemplate)
-	require.NoError(t, err)
-
-	templ, err := repo.Get("simple")
-	require.NoError(t, err)
-
-	var b bytes.Buffer
-	err = templ.Execute(&b, nil)
-	require.NoError(t, err)
-
-	assert.EqualT(t, "test", b.String())
-}
-
-func TestTemplates_RepoLoadsAllTemplatesDefined(t *testing.T) {
-	var b bytes.Buffer
-	repo := NewRepository(nil)
-
-	err := repo.AddFile("multiple", multipleDefinitions)
-	require.NoError(t, err)
-
-	templ, err := repo.Get("multiple")
-	require.NoError(t, err)
-
-	err = templ.Execute(&b, nil)
-	require.NoError(t, err)
-
-	assert.Empty(t, b.String())
-
-	templ, err = repo.Get("T1")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-
-	err = templ.Execute(&b, nil)
-	require.NoError(t, err)
-
-	assert.EqualT(t, "T1", b.String())
-}
-
-type testData struct {
-	Children []testData
-	Name     string
-	Recurse  bool
-}
-
-func TestTemplates_RepoLoadsAllDependantTemplates(t *testing.T) {
-	var b bytes.Buffer
-	repo := NewRepository(nil)
-
-	err := repo.AddFile("multiple", multipleDefinitions)
-	require.NoError(t, err)
-
-	err = repo.AddFile("dependant", dependantTemplate)
-	require.NoError(t, err)
-
-	templ, err := repo.Get("dependant")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-
-	err = templ.Execute(&b, nil)
-	require.NoError(t, err)
-
-	assert.EqualT(t, "T1D1", b.String())
-}
-
-func TestTemplates_RepoRecursiveTemplates(t *testing.T) {
-	var b bytes.Buffer
-	repo := NewRepository(nil)
-
-	err := repo.AddFile("c1", cirularDeps1)
-	require.NoError(t, err)
-
-	err = repo.AddFile("c2", cirularDeps2)
-	require.NoError(t, err)
-
-	templ, err := repo.Get("c1")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-
-	data := testData{
-		Name: "Root",
-		Children: []testData{
-			{Recurse: false},
-		},
-	}
-	expected := `Root: Children`
-	err = templ.Execute(&b, data)
-	require.NoError(t, err)
-	assert.EqualT(t, expected, b.String())
-
-	data = testData{
-		Name: "Root",
-		Children: []testData{
-			{Name: "Child1", Recurse: true, Children: []testData{{Name: "Child2"}}},
-		},
-	}
-
-	b.Reset()
-
-	expected = `Root: Child1: Children`
-
-	err = templ.Execute(&b, data)
-	require.NoError(t, err)
-
-	assert.EqualT(t, expected, b.String())
-
-	data = testData{
-		Name: "Root",
-		Children: []testData{
-			{Name: "Child1", Recurse: false, Children: []testData{{Name: "Child2"}}},
-		},
-	}
-
-	b.Reset()
-
-	expected = `Root: Children`
-
-	err = templ.Execute(&b, data)
-	require.NoError(t, err)
-
-	assert.EqualT(t, expected, b.String())
-}
-
-// Test that definitions are available to templates
-// TODO: should test also with the codeGenApp context
-
-// Test copyright definition.
-func TestTemplates_DefinitionCopyright(t *testing.T) {
-	defer discardOutput()()
-
-	const copyright = `{{ .Copyright }}`
-
-	repo := NewRepository(nil)
-
-	err := repo.AddFile("copyright", copyright)
-	require.NoError(t, err)
-
-	templ, err := repo.Get("copyright")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-
-	opts := opts()
-	opts.Copyright = "My copyright clause"
-	expected := opts.Copyright
-
-	// executes template against model definitions
-	genModel, err := getModelEnvironment("../fixtures/codegen/todolist.models.yml", opts)
-	require.NoError(t, err)
-	require.NotNil(t, genModel)
-
-	rendered := bytes.NewBuffer(nil)
-	err = templ.Execute(rendered, genModel)
-	require.NoError(t, err)
-	assert.EqualT(t, expected, rendered.String())
-
-	// executes template against operations definitions
-	genOperation, err := getOperationEnvironment("get", "/media/search", "../fixtures/codegen/instagram.yml", opts)
-	require.NoError(t, err)
-	require.NotNil(t, genOperation)
-
-	rendered.Reset()
-
-	err = templ.Execute(rendered, genOperation)
-	require.NoError(t, err)
-
-	assert.EqualT(t, expected, rendered.String())
-}
-
-// Test TargetImportPath definition.
-func TestTemplates_DefinitionTargetImportPath(t *testing.T) {
-	const targetImportPath = `{{ .TargetImportPath }}`
-	defer discardOutput()()
-
-	repo := NewRepository(nil)
-
-	err := repo.AddFile("targetimportpath", targetImportPath)
-	require.NoError(t, err)
-
-	templ, err := repo.Get("targetimportpath")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-
-	opts := opts()
-	// Non existing target would panic: to be tested too, but in another module
-	opts.Target = "../fixtures"
-	expected := "github.com/go-swagger/go-swagger/fixtures"
-
-	// executes template against model definitions
-	genModel, err := getModelEnvironment("../fixtures/codegen/todolist.models.yml", opts)
-	require.NoError(t, err)
-	require.NotNil(t, genModel)
-
-	rendered := bytes.NewBuffer(nil)
-	err = templ.Execute(rendered, genModel)
-	require.NoError(t, err)
-
-	assert.EqualT(t, expected, rendered.String())
-
-	// executes template against operations definitions
-	genOperation, err := getOperationEnvironment("get", "/media/search", "../fixtures/codegen/instagram.yml", opts)
-	require.NoError(t, err)
-	require.NotNil(t, genOperation)
-
-	rendered.Reset()
-
-	err = templ.Execute(rendered, genOperation)
-	require.NoError(t, err)
-
-	assert.EqualT(t, expected, rendered.String())
-}
-
-// Simulates a definition environment for model templates.
-func getModelEnvironment(_ string, opts *GenOpts) (*GenDefinition, error) {
-	defer discardOutput()()
-
-	specDoc, err := loads.Spec("../fixtures/codegen/todolist.models.yml")
-	if err != nil {
-		return nil, err
-	}
-
-	definitions := specDoc.Spec().Definitions
-	if len(definitions) == 0 {
-		return nil, errors.New("todolist.models.yml did not return any definition")
-	}
-
-	var (
-		name   string
-		schema spec.Schema
-	)
-	for k, sch := range definitions {
-		name = k
-		schema = sch
-		// one is enough
-		break
-	}
-
-	genModel, err := makeGenDefinition(name, "models", schema, specDoc, opts)
-	if err != nil {
-		return nil, err
-	}
-
-	return genModel, nil
-}
-
-// Simulates a definition environment for operation templates.
-func getOperationEnvironment(operation string, path string, spec string, opts *GenOpts) (*GenOperation, error) {
-	defer discardOutput()()
-
-	b, err := methodPathOpBuilder(operation, path, spec)
-	if err != nil {
-		return nil, err
-	}
-	b.GenOpts = opts
-	g, err := b.MakeOperation()
-	if err != nil {
-		return nil, err
-	}
-	return &g, nil
-}
-
-// AddFile() global package function (protected vs unprotected)
-// Mostly unused in tests, since the Repository.AddFile()
-// is generally preferred.
-func TestTemplates_AddFile(t *testing.T) {
-	defer discardOutput()()
-
-	funcTpl := testFuncTpl()
-
-	// unprotected
-	err := AddFile("functpl", funcTpl)
-	require.NoError(t, err)
-
-	_, err = templates.Get("functpl")
-	require.NoError(t, err)
-
-	// protected
-	err = AddFile("schemabody", funcTpl)
-	require.Error(t, err)
-	assert.StringContainsT(t, err.Error(), "cannot overwrite protected template")
-}
-
-// Test LoadDir.
-func TestTemplates_LoadDir(t *testing.T) {
-	defer discardOutput()()
-
-	// Fails
-	err := templates.LoadDir("")
+	err := repo.LoadDir("")
 	require.Error(t, err)
 	assert.StringContainsT(t, err.Error(), "could not complete")
+}
 
-	// Fails again (from any dir?)
-	err = templates.LoadDir("templates")
+func TestLoadDir_ProtectedTemplateBlocks(t *testing.T) {
+	repo := NewRepository(nil)
+	repo.SetProtectedTemplates(map[string]bool{
+		"myProtected": true,
+	})
+
+	// Create a temp dir with a .gotmpl that defines a protected template
+	dir := t.TempDir()
+	err := os.WriteFile(
+		filepath.Join(dir, "test.gotmpl"),
+		[]byte(`{{ define "myProtected" }}hello{{ end }}`),
+		0o600,
+	)
+	require.NoError(t, err)
+
+	err = repo.LoadDir(dir)
 	require.Error(t, err)
 	assert.StringContainsT(t, err.Error(), "cannot overwrite protected template")
-
-	// TODO: success case
-	// To force a success, we need to empty the global list of protected
-	// templates...
-	origProtectedTemplates := protectedTemplates
-
-	defer func() {
-		// Restore variable initialized with package
-		protectedTemplates = origProtectedTemplates
-	}()
-
-	protectedTemplates = make(map[string]bool)
-	repo := NewRepository(FuncMapFunc(DefaultLanguageFunc()))
-	err = repo.LoadDir("templates")
-	require.NoError(t, err)
 }
 
-// Test LoadDir.
-func TestTemplates_SetAllowOverride(t *testing.T) {
-	defer discardOutput()()
+func TestLoadDir_Success(t *testing.T) {
+	repo := NewRepository(nil)
 
-	// adding protected file with allowOverride set to false fails
-	templates.SetAllowOverride(false)
-	err := templates.AddFile("schemabody", "some data")
+	dir := t.TempDir()
+	err := os.WriteFile(
+		filepath.Join(dir, "greeting.gotmpl"),
+		[]byte(`hello world`),
+		0o600,
+	)
+	require.NoError(t, err)
+
+	err = repo.LoadDir(dir)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("greeting")
+	require.NoError(t, err)
+	require.NotNil(t, tmpl)
+}
+
+func TestSetAllowOverride(t *testing.T) {
+	repo := NewRepository(nil)
+	repo.SetProtectedTemplates(map[string]bool{
+		"secret": true,
+	})
+
+	// Seed the repo with the protected template
+	err := repo.addFile("secret.gotmpl", "original", true)
+	require.NoError(t, err)
+
+	// Without allowOverride, adding a file that redefines "secret" fails
+	repo.SetAllowOverride(false)
+	err = repo.AddFile("other.gotmpl", `{{ define "secret" }}replaced{{ end }}`)
 	require.Error(t, err)
-	assert.StringContainsT(t, err.Error(), "cannot overwrite protected template schemabody")
+	assert.StringContainsT(t, err.Error(), "cannot overwrite protected template secret")
 
-	// adding protected file with allowOverride set to true should not fail
-	templates.SetAllowOverride(true)
-	err = templates.AddFile("schemabody", "some data")
+	// With allowOverride, it succeeds
+	repo.SetAllowOverride(true)
+	err = repo.AddFile("other.gotmpl", `{{ define "secret" }}replaced{{ end }}`)
 	require.NoError(t, err)
 }
 
-// Test LoadContrib.
-func TestTemplates_LoadContrib(t *testing.T) {
-	tests := []struct {
-		name      string
-		template  string
-		wantError bool
-	}{
-		{
-			name:      "None_existing_contributor_template",
-			template:  "NonExistingContributorTemplate",
-			wantError: true,
-		},
-		{
-			name:      "Existing_contributor",
-			template:  "stratoscale",
-			wantError: false,
-		},
-	}
+func TestShallowClone(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("hello", "world")
+	require.NoError(t, err)
+	repo.SetProtectedTemplates(map[string]bool{"hello": true})
+	repo.SetAllowOverride(true)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := templates.LoadContrib(tt.template)
-			if tt.wantError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
+	clone := repo.ShallowClone()
+
+	// clone has the same template
+	tmpl, err := clone.Get("hello")
+	require.NoError(t, err)
+	require.NotNil(t, tmpl)
+
+	// adding to clone doesn't affect original
+	err = clone.AddFile("extra", "data")
+	require.NoError(t, err)
+	_, err = repo.Get("extra")
+	require.Error(t, err)
 }
 
-// TODO: test error case in LoadDefaults()
-// test DumpTemplates().
-func TestTemplates_DumpTemplates(t *testing.T) {
-	var buf bytes.Buffer
-	defer captureOutput(&buf)()
+func TestLoadDefaults(t *testing.T) {
+	repo := NewRepository(nil)
 
-	templates.DumpTemplates()
-	assert.NotEmpty(t, buf)
-	// Sample output
-	assert.StringContainsT(t, buf.String(), "## tupleSerializer")
-	assert.StringContainsT(t, buf.String(), "Defined in `tupleserializer.gotmpl`")
-	assert.StringContainsT(t, buf.String(), "####requires \n - schemaType")
+	assets := map[string][]byte{
+		"greeting.gotmpl": []byte("hello {{ . }}"),
+		"farewell.gotmpl": []byte("goodbye {{ . }}"),
+	}
+	err := repo.LoadDefaults(assets)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("greeting")
+	require.NoError(t, err)
+	require.NotNil(t, tmpl)
+
+	tmpl, err = repo.Get("farewell")
+	require.NoError(t, err)
+	require.NotNil(t, tmpl)
+}
+
+func TestLoadDefaults_ParseError(t *testing.T) {
+	repo := NewRepository(nil)
+
+	assets := map[string][]byte{
+		"bad.gotmpl": []byte("{{ .Broken"),
+	}
+	err := repo.LoadDefaults(assets)
+	require.Error(t, err)
+}
+
+type mockAssetProvider struct {
+	assets map[string][]byte
+}
+
+func (m mockAssetProvider) AssetNames() []string {
+	names := make([]string, 0, len(m.assets))
+	for k := range m.assets {
+		names = append(names, k)
+	}
+	return names
+}
+
+func (m mockAssetProvider) MustAsset(name string) []byte {
+	return m.assets[name]
+}
+
+func TestLoadContrib(t *testing.T) {
+	repo := NewRepository(nil)
+	provider := mockAssetProvider{
+		assets: map[string][]byte{
+			"templates/contrib/mycontrib/model.gotmpl":  []byte("model template"),
+			"templates/contrib/mycontrib/server.gotmpl": []byte("server template"),
+			"templates/contrib/other/skip.gotmpl":       []byte("should be skipped"),
+			"templates/contrib/mycontrib/readme.md":     []byte("not a template"),
+		},
+	}
+
+	err := repo.LoadContrib("mycontrib", provider)
+	require.NoError(t, err)
+
+	_, err = repo.Get("model")
+	require.NoError(t, err)
+	_, err = repo.Get("server")
+	require.NoError(t, err)
+
+	// "skip" from another contrib should not be loaded
+	_, err = repo.Get("skip")
+	require.Error(t, err)
+}
+
+func TestLoadContrib_NoFiles(t *testing.T) {
+	repo := NewRepository(nil)
+	provider := mockAssetProvider{
+		assets: map[string][]byte{
+			"templates/contrib/other/model.gotmpl": []byte("wrong contrib"),
+		},
+	}
+
+	err := repo.LoadContrib("nonexistent", provider)
+	require.Error(t, err)
+	assert.StringContainsT(t, err.Error(), "no files added")
+}
+
+func TestMustGet(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("present", "content")
+	require.NoError(t, err)
+
+	// success
+	tmpl := repo.MustGet("present")
+	require.NotNil(t, tmpl)
+
+	// panic on missing
+	assert.Panics(t, func() {
+		repo.MustGet("missing")
+	})
+}
+
+func TestGet_NotFound(t *testing.T) {
+	repo := NewRepository(nil)
+	_, err := repo.Get("nonexistent")
+	require.Error(t, err)
+	assert.StringContainsT(t, err.Error(), "template doesn't exist")
+}
+
+func TestAddFile_ParseError(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("bad", "{{ .Broken")
+	require.Error(t, err)
+	assert.StringContainsT(t, err.Error(), "failed to load template")
+}
+
+func TestDumpTemplates(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("base", `base content {{ template "sub" }}`)
+	require.NoError(t, err)
+	err = repo.AddFile("sub", `sub content`)
+	require.NoError(t, err)
+
+	// should not panic
+	repo.DumpTemplates()
+}
+
+func TestFuncs(t *testing.T) {
+	fm := make(map[string]any)
+	fm["myfunc"] = func() string { return "hi" }
+	repo := NewRepository(fm)
+
+	funcs := repo.Funcs()
+	require.NotNil(t, funcs["myfunc"])
+}
+
+func TestFuncs_NilInit(t *testing.T) {
+	repo := NewRepository(nil)
+	funcs := repo.Funcs()
+	require.NotNil(t, funcs)
+}
+
+func TestDependencies_TemplateNode(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("child", "child content")
+	require.NoError(t, err)
+	err = repo.AddFile("parent", `parent calls {{ template "child" }}`)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("parent")
+	require.NoError(t, err)
+
+	// executing should work since dependency is resolved
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, nil)
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "child content")
+}
+
+func TestDependencies_MissingDep(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("orphan", `calls {{ template "missing" }}`)
+	require.NoError(t, err)
+
+	_, err = repo.Get("orphan")
+	require.Error(t, err)
+	assert.StringContainsT(t, err.Error(), "could not find template missing")
+}
+
+func TestDependencies_IfNode(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("ifchild", "if-child")
+	require.NoError(t, err)
+	err = repo.AddFile("elsechild", "else-child")
+	require.NoError(t, err)
+	err = repo.AddFile("iftpl", `{{ if . }}{{ template "ifchild" }}{{ else }}{{ template "elsechild" }}{{ end }}`)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("iftpl")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, true)
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "if-child")
+
+	buf.Reset()
+	err = tmpl.Execute(&buf, false)
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "else-child")
+}
+
+func TestDependencies_RangeNode(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("item", "item:{{ . }}")
+	require.NoError(t, err)
+	err = repo.AddFile("rangetpl", `{{ range . }}{{ template "item" . }}{{ end }}`)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("rangetpl")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, []string{"a", "b"})
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "item:a")
+	assert.StringContainsT(t, buf.String(), "item:b")
+}
+
+func TestDependencies_WithNode(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("withchild", "with-child:{{ . }}")
+	require.NoError(t, err)
+	err = repo.AddFile("withtpl", `{{ with . }}{{ template "withchild" . }}{{ end }}`)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("withtpl")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, "data")
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "with-child:data")
+}
+
+func TestDependencies_Transitive(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("leaf", "leaf")
+	require.NoError(t, err)
+	err = repo.AddFile("mid", `mid->{{ template "leaf" }}`)
+	require.NoError(t, err)
+	err = repo.AddFile("root", `root->{{ template "mid" }}`)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("root")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, nil)
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "root->mid->leaf")
+}
+
+func TestFindDependencies_Nil(t *testing.T) {
+	deps := findDependencies(nil)
+	assert.Nil(t, deps)
+}
+
+func TestLoadContrib_ParseError(t *testing.T) {
+	repo := NewRepository(nil)
+	provider := mockAssetProvider{
+		assets: map[string][]byte{
+			"templates/contrib/bad/broken.gotmpl": []byte("{{ .Broken"),
+		},
+	}
+
+	err := repo.LoadContrib("bad", provider)
+	require.Error(t, err)
+	assert.StringContainsT(t, err.Error(), "failed to load template")
+}
+
+func TestDependencies_RangeWithElse(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("rangeitem", "item")
+	require.NoError(t, err)
+	err = repo.AddFile("rangeempty", "empty")
+	require.NoError(t, err)
+	err = repo.AddFile("rangeelse", `{{ range . }}{{ template "rangeitem" }}{{ else }}{{ template "rangeempty" }}{{ end }}`)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("rangeelse")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, []string{})
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "empty")
+}
+
+func TestDependencies_WithElse(t *testing.T) {
+	repo := NewRepository(nil)
+	err := repo.AddFile("withpresent", "present")
+	require.NoError(t, err)
+	err = repo.AddFile("withnil", "nil")
+	require.NoError(t, err)
+	err = repo.AddFile("withelse", `{{ with . }}{{ template "withpresent" }}{{ else }}{{ template "withnil" }}{{ end }}`)
+	require.NoError(t, err)
+
+	tmpl, err := repo.Get("withelse")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, nil)
+	require.NoError(t, err)
+	assert.StringContainsT(t, buf.String(), "nil")
 }
