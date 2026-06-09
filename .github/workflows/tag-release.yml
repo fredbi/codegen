@@ -1,0 +1,20 @@
+name: Release on tag
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - v[0-9]+*
+
+jobs:
+  gh-release:
+    name: Create release
+    permissions:
+      contents: write
+    uses: go-openapi/ci-workflows/.github/workflows/release.yml@7a1bb6c4f078ac1a3258db1ae91c37a9d29eee2a # v0.3.4
+    with:
+      tag: ${{ github.ref_name }}
+      is-monorepo: true
+    secrets: inherit
