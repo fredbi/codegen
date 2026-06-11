@@ -1,0 +1,6 @@
+plans/
+skills/
+commands/
+agents/
+hooks/
+*.local.json

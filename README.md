@@ -35,11 +35,12 @@ go get github.com/go-openapi/codegen/{module}
 
 `go-openapi/codegen` exposes a collection of code generation tools and utilities.
 
-* mangling: name mangling utilities to produce clean go identifiers
-* genapp: a composable app-generator to build clean, formatted go code
-* templates-repo: a repository to cache templates with a unified namespace
-* gentesting: tools to test generated code from their behavior and desired properties
 * formatting: go code formatting,  including imports resolution and go.mod formatting
+* funcmaps: useful pre-assembled funcmaps
+* genapp: a composable app-generator to build clean, formatted go code
+* gentesting: tools to test generated code from their behavior and desired properties
+* mangling: name mangling utilities to produce clean go identifiers
+* templates-repo: a repository to cache templates with a unified namespace
 
 ---
 
