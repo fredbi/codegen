@@ -23,9 +23,9 @@ import (
 	"github.com/Masterminds/sprig/v3"
 	"github.com/kr/pretty"
 
+	"github.com/go-openapi/codegen/mangling"
 	"github.com/go-openapi/inflect"
 	"github.com/go-openapi/runtime"
-	"github.com/go-openapi/swag/mangling"
 	"github.com/go-openapi/swag/stringutils"
 )
 

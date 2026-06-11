@@ -7,11 +7,10 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/go-openapi/codegen/mangling"
+	"github.com/go-openapi/swag/conv"
 	"github.com/go-openapi/testify/v2/assert"
 	"github.com/go-openapi/testify/v2/require"
-
-	"github.com/go-openapi/swag/conv"
-	"github.com/go-openapi/swag/mangling"
 )
 
 func TestFuncMap(t *testing.T) { //nolint:maintidx // false positive

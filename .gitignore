@@ -4,3 +4,5 @@ Godeps
 .idea
 *.out
 .mcp.json
+.worktrees
+go.work.sum

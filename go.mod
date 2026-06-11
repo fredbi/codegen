@@ -1,18 +1,20 @@
 module github.com/go-openapi/codegen
 
-go 1.25.0
+go 1.26.3
 
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
+	github.com/go-openapi/codegen/mangling v0.26.1
 	github.com/go-openapi/inflect v0.21.6
 	github.com/go-openapi/runtime v0.32.3
 	github.com/go-openapi/swag/conv v0.26.0
-	github.com/go-openapi/swag/mangling v0.26.1
 	github.com/go-openapi/swag/stringutils v0.26.0
 	github.com/go-openapi/testify/v2 v2.5.1
 	github.com/kr/pretty v0.3.1
 	golang.org/x/tools v0.45.0
 )
+
+replace github.com/go-openapi/codegen/mangling => ./mangling
 
 require (
 	dario.cat/mergo v1.0.2 // indirect

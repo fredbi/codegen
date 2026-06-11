@@ -15,7 +15,7 @@ import (
 	"text/template"
 	"text/template/parse"
 
-	"github.com/go-openapi/swag/mangling"
+	"github.com/go-openapi/codegen/mangling"
 )
 
 // AssetProvider provides access to embedded template assets.
