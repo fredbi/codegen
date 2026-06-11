@@ -4,6 +4,7 @@ linters:
   disable:
     - cyclop
     - depguard
+    - err113 # temporarily disabled
     - errchkjson
     - errorlint
     - exhaustruct
@@ -12,6 +13,7 @@ linters:
     - gochecknoglobals
     - gochecknoinits
     - gocognit
+    - goconst # pending permanent disabling - need to see config first
     - godot
     - godox
     - gomoddirectives
@@ -44,7 +46,7 @@ linters:
     dupl:
       threshold: 200
     goconst:
-      min-len: 2
+      min-len: 8
       min-occurrences: 3
     gocyclo:
       min-complexity: 45

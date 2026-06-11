@@ -1,6 +1,0 @@
-github.com/go-openapi/swag/mangling v0.26.1 h1:gpYI4WuPKFJJVjV5cDLGlDVJhFIxYjQc7yN5eEb4CqM=
-github.com/go-openapi/swag/mangling v0.26.1/go.mod h1:POETDH01hqAdASXfw7ISEd9bCOE6xBHOt8NHmGZRmYM=
-github.com/go-openapi/testify/v2 v2.5.1 h1:TMdhCaw8fUNraVSf3Omoob1dO/AzBfhtFAPW0an6sBo=
-github.com/go-openapi/testify/v2 v2.5.1/go.mod h1:SgsVHtfooshd0tublTtJ50FPKhujf47YRqauXXOUxfw=
-github.com/go-swagger/go-swagger v0.34.1 h1:2wqw4mJ8kgxewFEdEQUX7PgdUhVVuEStE0MmfYOO4zQ=
-github.com/go-swagger/go-swagger v0.34.1/go.mod h1:PETEHJRSRNWWyfCFYeIgCoMLK0ChyLz0LhNeQByzyts=

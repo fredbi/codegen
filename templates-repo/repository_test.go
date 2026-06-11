@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	gentest "github.com/go-openapi/codegen/gentesting"
 	"github.com/go-openapi/testify/v2/assert"
 	"github.com/go-openapi/testify/v2/require"
-	"github.com/go-swagger/go-swagger/generator/internal/gentest"
 )
 
 func TestLoadDir_EmptyPath(t *testing.T) {
