@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-openapi/swag/mangling"
 
-	golangfuncs "github.com/go-swagger/go-swagger/generator/internal/funcmaps/golang"
+	golangfuncs "github.com/go-openapi/codegen/funcmaps/golang"
 )
 
 // DefaultIndent is the default tab width used for Go source formatting.
