@@ -1,3 +1,3 @@
 module github.com/go-openapi/codegen/genapp
 
-go 1.26.3
+go 1.25.0
