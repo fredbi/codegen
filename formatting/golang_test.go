@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
 // SPDX-License-Identifier: Apache-2.0
 
-package language
+package formatting
 
 import (
 	"strings"
@@ -15,7 +15,8 @@ func TestGolang_MangleFileName(t *testing.T) {
 	o := &Options{}
 	o.Init()
 	res := o.MangleFileName("aFileEndingInOsNameWindows")
-	assert.TrueT(t, strings.HasSuffix(res, "_windows"))
+	assert.FalseT(t, strings.HasSuffix(res, "_windows"))
+	assert.TrueT(t, strings.HasSuffix(res, "_windows_swagger"))
 
 	o = GolangOpts()
 	res = o.MangleFileName("aFileEndingInOsNameWindows")
@@ -36,20 +37,20 @@ func TestGolang_ManglePackage(t *testing.T) {
 		expectedName string
 	}{
 		{tested: "", expectedPath: defaultPackage, expectedName: defaultPackage},
-		{tested: "select", expectedPath: "select_default", expectedName: "select_default"},
+		{tested: "select", expectedPath: "selectpkg", expectedName: "selectpkg"}, // a package path may use a go keyword?
 		{tested: "x", expectedPath: "x", expectedName: "x"},
 		{tested: "a/b/c-d/e_f/g", expectedPath: "a/b/c-d/e_f/g", expectedName: "g"},
-		{tested: "a/b/c-d/e_f/g-h", expectedPath: "a/b/c-d/e_f/g_h", expectedName: "g_h"},
-		{tested: "a/b/c-d/e_f/2A", expectedPath: "a/b/c-d/e_f/nr2_a", expectedName: "nr2_a"},
-		{tested: "a/b/c-d/e_f/#", expectedPath: "a/b/c-d/e_f/hash_tag", expectedName: "hash_tag"},
-		{tested: "#help", expectedPath: "hash_tag_help", expectedName: "hash_tag_help"},
-		{tested: "vendor", expectedPath: "vendor_swagger", expectedName: "vendor_swagger"},
-		{tested: "internal", expectedPath: "internal_swagger", expectedName: "internal_swagger"},
+		{tested: "a/b/c-d/e_f/g-h", expectedPath: "a/b/c-d/e_f/g-h", expectedName: "h"},
+		{tested: "a/b/c-d/e_f/2A", expectedPath: "a/b/c-d/e_f/2-a", expectedName: "a"},
+		{tested: "a/b/c-d/e_f/#", expectedPath: "a/b/c-d/e_f/hash", expectedName: "hash"},
+		{tested: "#help", expectedPath: "hash-help", expectedName: "help"},
+		{tested: "vendor", expectedPath: "vendorpkg", expectedName: "vendorpkg"},
+		{tested: "internal", expectedPath: "internalpkg", expectedName: "internalpkg"},
 	} {
 		res := o.ManglePackagePath(v.tested, defaultPackage)
-		assert.EqualT(t, v.expectedPath, res)
+		assert.EqualTf(t, v.expectedPath, res, "expected ManglePackagePath(%q) to yield %q but go %q", v.tested, v.expectedPath, res)
 		res = o.ManglePackageName(v.tested, defaultPackage)
-		assert.EqualT(t, v.expectedName, res)
+		assert.EqualTf(t, v.expectedName, res, "expected ManglePackageName(%q) to yield %q but go %q", v.tested, v.expectedName, res)
 	}
 }
 

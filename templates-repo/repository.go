@@ -32,7 +32,7 @@ type Repository struct {
 	protectedTemplates map[string]bool
 	allowOverride      bool
 	mux                sync.Mutex
-	mangler            mangling.NameMangler
+	mangler            mangling.Mangler
 }
 
 // NewRepository creates a new template repository with the provided functions defined.
@@ -41,7 +41,7 @@ func NewRepository(funcs template.FuncMap) *Repository {
 		files:     make(map[string]string),
 		templates: make(map[string]*template.Template),
 		funcs:     funcs,
-		mangler:   mangling.NewNameMangler(), // default is good enough for template management
+		mangler:   mangling.MakeMangler(), // default is good enough for template management
 	}
 
 	if repo.funcs == nil {
@@ -203,7 +203,7 @@ func (t *Repository) Funcs() template.FuncMap {
 
 func (t *Repository) addFile(name, data string, allowOverride bool) error {
 	fileName := name
-	name = t.mangler.ToJSONName(strings.TrimSuffix(name, ".gotmpl"))
+	name = t.mangler.Camelize(strings.TrimSuffix(name, ".gotmpl"))
 
 	templ, err := template.New(name).Funcs(t.funcs).Parse(data)
 	if err != nil {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
 // SPDX-License-Identifier: Apache-2.0
 
-package language
+package formatting
 
 import (
 	"encoding/json"
@@ -24,17 +24,8 @@ var moduleRe = regexp.MustCompile(`module[ \t]+([^\s]+)`)
 // GolangOpts returns [Options] for rendering items as golang code.
 func GolangOpts(extraInitialisms ...string) *Options {
 	opts := new(Options)
-	opts.ReservedWords = []string{
-		"break", "default", "func", "interface", "select",
-		"case", "defer", "go", "map", "struct",
-		"chan", "else", "goto", "package", "switch",
-		"const", "fallthrough", "if", "range", "type",
-		"continue", "for", "import", "return", "var",
-	}
 	opts.ExtraInitialisms = extraInitialisms
 	opts.formatFunc = defaultGoFormatFunc() // this default may be overridden by [GenOpts]
-	opts.fileNameFunc = opts.defaultGoFilenameFunc(goOtherReservedSuffixes())
-	opts.dirNameFunc = defaultGoDirnameFunc()
 	opts.ImportsFunc = defaultGoImportsFunc()
 	opts.ArrayInitializerFunc = defaultGoArrayInitializerFunc()
 	opts.BaseImportFunc = defaultGoBaseImportFunc()
@@ -49,26 +40,6 @@ func defaultGoFormatFunc() FormatterFunc {
 		o := FormatOptsWithDefault(fmtOpts)
 		imports.LocalPrefix = strings.Join(o.LocalPrefixes, ",") // regroup these packages
 		return imports.Process(ffn, content, &o.Options)
-	}
-}
-
-func (o *Options) defaultGoFilenameFunc(reservedSuffixes map[string]bool) MangleFunc {
-	return func(name string) string {
-		parts := strings.Split(o.Mangler.ToFileName(name), "_")
-		if reservedSuffixes[parts[len(parts)-1]] {
-			parts = append(parts, "swagger")
-		}
-		return strings.Join(parts, "_")
-	}
-}
-
-func defaultGoDirnameFunc() MangleFunc {
-	return func(name string) string {
-		switch name {
-		case "vendor", "internal":
-			return strings.Join([]string{name, "swagger"}, "_")
-		}
-		return name
 	}
 }
 
@@ -276,56 +247,4 @@ func CheckPrefixAndFetchRelativePath(childpath string, parentpath string) (bool,
 	}
 
 	return false, ""
-}
-
-func goOtherReservedSuffixes() map[string]bool {
-	return map[string]bool{
-		// goos
-		"aix":       true,
-		"android":   true,
-		"darwin":    true,
-		"dragonfly": true,
-		"freebsd":   true,
-		"hurd":      true,
-		"illumos":   true,
-		"ios":       true,
-		"js":        true,
-		"linux":     true,
-		"nacl":      true,
-		"netbsd":    true,
-		"openbsd":   true,
-		"plan9":     true,
-		"solaris":   true,
-		"windows":   true,
-		"zos":       true,
-
-		// arch
-		"386":         true,
-		"amd64":       true,
-		"amd64p32":    true,
-		"arm":         true,
-		"armbe":       true,
-		"arm64":       true,
-		"arm64be":     true,
-		"loong64":     true,
-		"mips":        true,
-		"mipsle":      true,
-		"mips64":      true,
-		"mips64le":    true,
-		"mips64p32":   true,
-		"mips64p32le": true,
-		"ppc":         true,
-		"ppc64":       true,
-		"ppc64le":     true,
-		"riscv":       true,
-		"riscv64":     true,
-		"s390":        true,
-		"s390x":       true,
-		"sparc":       true,
-		"sparc64":     true,
-		"wasm":        true,
-
-		// other reserved suffixes
-		"test": true,
-	}
 }
