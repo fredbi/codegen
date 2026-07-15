@@ -130,7 +130,7 @@ func (g GoMangler) Module(pth string) string {
 
 	// A module path element is repaired as a whole: a directory "my-con" is legal — only bare "con" is a Windows device
 	// name, only bare "v2" is a version, etc.
-	return dir + repairModuleShort(kebab)
+	return dir + g.repairModuleShort(kebab)
 }
 
 // File produces a valid go file name, transforming any trailing segment that bears semantics to the go build system.
@@ -250,7 +250,7 @@ func (g GoMangler) packageParts(pth string) (shortName string, pkg string, parts
 	// The package short name is the last "-" segment; repair that segment (reflected back into pkg).
 	parts = strings.Split(kebab, "-")
 	last := len(parts) - 1
-	if repaired := repairPackageShort(parts[last]); repaired != parts[last] {
+	if repaired := g.repairPackageShort(parts[last]); repaired != parts[last] {
 		parts[last] = repaired
 		kebab = strings.Join(parts, "-")
 	}
@@ -261,8 +261,11 @@ func (g GoMangler) packageParts(pth string) (shortName string, pkg string, parts
 // repairPackageShort fixes a package short name that would confuse the go toolchain:
 //   - a reserved name gets "pkg" appended directly (no separator): "main" -> "mainpkg";
 //   - a bare major-version element becomes "version<N>": "v2" -> "version2", "V10" -> "version10".
-func repairPackageShort(short string) string {
+func (g GoMangler) repairPackageShort(short string) string {
 	if _, ok := reservedPackageNames[short]; ok {
+		return short + "pkg"
+	}
+	if _, ok := g.reserved[short]; ok {
 		return short + "pkg"
 	}
 	if digits := majorVersionDigits(short); digits != "" {
@@ -287,12 +290,12 @@ func majorVersionDigits(short string) string {
 }
 
 // repairModuleShort is [repairPackageShort] plus a Windows device-name repair ("con" -> "conpkg").
-func repairModuleShort(short string) string {
+func (g GoMangler) repairModuleShort(short string) string {
 	if _, ok := reservedWindowsNames[short]; ok {
 		return short + "pkg"
 	}
 
-	return repairPackageShort(short)
+	return g.repairPackageShort(short)
 }
 
 // repairFileSuffix appends the file repair suffix (default "swagger") when the last snake segment is a reserved

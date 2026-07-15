@@ -643,7 +643,7 @@ type goPackageCase struct {
 
 func goPackageCases() iter.Seq[goPackageCase] {
 	return slices.Values([]goPackageCase{
-		{"MyPackage", "package", "my-package", []string{"my", "package"}},
+		{"MyPackage", "packagepkg", "my-packagepkg", []string{"my", "packagepkg"}},
 		{"github.com/go-redis/redis", "redis", "github.com/go-redis/redis", []string{"redis"}},
 		{"github.com/toktok/@alpha-beta", "beta", "github.com/toktok/at-alpha-beta", []string{"at", "alpha", "beta"}},
 		{"github.com/user/GoThing/", "thing", "github.com/user/go-thing", []string{"go", "thing"}}, // trailing "/" trimmed
