@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
-	"unicode"
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/kr/pretty"
@@ -29,20 +28,21 @@ import (
 	"github.com/go-openapi/swag/stringutils"
 )
 
+var foldReplacer = strings.NewReplacer("\n", " ", "\r", "")
+
 // FuncMap returns a template.FuncMap containing all Go-specific template
 // functions that are independent of generator types. Callers typically
 // merge additional entries (e.g. LanguageOpts-dependent or type-dependent
 // functions) on top.
-func FuncMap(mangler mangling.NameMangler) template.FuncMap {
+func FuncMap(mangler mangling.GoMangler) template.FuncMap {
 	f := sprig.TxtFuncMap()
-	pascalize := pascalize(mangler)
-	mediaGoName := mediaGoName(mangler)
+	pascalize := mangler.IdentExported
 
 	extra := template.FuncMap{
 		"pascalize":          pascalize,
-		"camelize":           mangler.ToJSONName,
-		"humanize":           mangler.ToHumanNameLower,
-		"dasherize":          mangler.ToCommandName,
+		"camelize":           mangler.Camelize,
+		"humanize":           mangler.Humanize,
+		"dasherize":          mangler.Kebabize,
 		"pluralizeFirstWord": pluralizeFirstWord,
 		"json":               asJSON,
 		"prettyjson":         asPrettyJSON,
@@ -64,7 +64,7 @@ func FuncMap(mangler mangling.NameMangler) template.FuncMap {
 		"inspect":            pretty.Sprint,
 		"cleanPath":          path.Clean,
 		"mediaTypeName":      mediaMime,
-		"mediaGoName":        mediaGoName,
+		"mediaGoName":        mangler.ConstName,
 		"dict":               dict,
 		"isInteger":          isInteger,
 		"hasPrefix":          strings.HasPrefix,
@@ -72,7 +72,7 @@ func FuncMap(mangler mangling.NameMangler) template.FuncMap {
 		"trimSpace":          strings.TrimSpace,
 		"mdBlock":            markdownBlock,
 		"httpStatus":         httpStatus,
-		"cleanupEnumVariant": cleanupEnumVariant,
+		"cleanupEnumVariant": mangler.ConstName,
 		"gt0":                gt0,
 		"escapeBackticks": func(arg string) string {
 			return strings.ReplaceAll(arg, "`", "`+\"`\"+`")
@@ -103,91 +103,6 @@ func FuncMap(mangler mangling.NameMangler) template.FuncMap {
 	maps.Copy(f, extra)
 
 	return f
-}
-
-var foldReplacer = strings.NewReplacer("\n", " ", "\r", "")
-
-// pascalize converts a name to Go PascalCase, handling special prefix characters.
-func pascalize(mangler mangling.NameMangler) func(string) string {
-	return func(arg string) string {
-		runes := []rune(arg)
-		switch len(runes) {
-		case 0:
-			return "Empty"
-		case 1:
-			switch runes[0] {
-			case '+', '-', '#', '_', '*', '/', '=':
-				return PrefixForName(arg)
-			}
-		}
-
-		return mangler.ToGoName(mangler.ToGoName(arg))
-	}
-}
-
-// PrefixForName returns a human-readable prefix for names starting with
-// special characters. It is used as [mangling.PrefixFunc].
-func PrefixForName(arg string) string {
-	first := []rune(arg)[0]
-	if len(arg) == 0 || unicode.IsLetter(first) {
-		return ""
-	}
-
-	switch first {
-	case '+':
-		return "Plus"
-	case '-':
-		return "Minus"
-	case '#':
-		return "HashTag"
-	case '*':
-		return "Asterisk"
-	case '/':
-		return "ForwardSlash"
-	case '=':
-		return "EqualSign"
-	}
-
-	return "Nr"
-}
-
-func replaceSpecialChar(in rune) string {
-	switch in {
-	case '.':
-		return "-Dot-"
-	case '+':
-		return "-Plus-"
-	case '-':
-		return "-Dash-"
-	case '#':
-		return "-Hashtag-"
-	case '=':
-		return "-Equal-"
-	case '!':
-		return "-Bang-"
-	case '~':
-		return "-Tilde-"
-	case '>':
-		return "-GreaterThan-"
-	case '<':
-		return "-LessThan-"
-	case '*':
-		return "-Star-"
-	case '/':
-		return "-Slash-"
-	}
-
-	return string(in)
-}
-
-func cleanupEnumVariant(in string) string {
-	var replaced strings.Builder
-
-	for _, char := range in {
-		replaced.WriteString(replaceSpecialChar(char))
-	}
-
-	return replaced.String()
 }
 
 // asJSON marshals data to a compact JSON string.
@@ -465,11 +380,4 @@ func markdownBlock(in string) string {
 // any parameters after the first semicolon.
 func mediaMime(orig string) string {
 	return strings.SplitN(orig, ";", mimeParamParts)[0]
-}
-
-// mediaGoName converts a MIME media type string to a Go-style PascalCase name.
-func mediaGoName(mangler mangling.NameMangler) func(string) string {
-	return func(media string) string {
-		return pascalize(mangler)(strings.ReplaceAll(media, "*", "Star"))
-	}
 }
