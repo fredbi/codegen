@@ -1,19 +1,16 @@
 // SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
 // SPDX-License-Identifier: Apache-2.0
 
-// Package language provides the language-specific options used by the
+// Package formatting provides the language-specific options used by the
 // go-swagger code generator. The primary type is [Options], which describes
 // formatting, naming, and import resolution rules for a target language.
-package language
+package formatting
 
 import (
-	"path"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/tools/imports"
 
-	golangfuncs "github.com/go-openapi/codegen/funcmaps/golang"
 	"github.com/go-openapi/codegen/mangling"
 )
 
@@ -76,19 +73,15 @@ func FormatOptsWithDefault(opts []FormatOption) FormatOpts {
 
 // Options describes a target language to the code generator.
 type Options struct {
-	ReservedWords        []string
 	BaseImportFunc       MangleFunc                     `json:"-"`
 	ImportsFunc          func(map[string]string) string `json:"-"`
 	ArrayInitializerFunc func(any) (string, error)      `json:"-"`
 	FormatOnly           bool
 	ExtraInitialisms     []string
-	Mangler              mangling.NameMangler
+	Mangler              mangling.GoMangler
 
-	reservedWordsSet map[string]struct{}
-	initialized      bool
-	formatFunc       FormatterFunc
-	fileNameFunc     MangleFunc // language specific source file naming rules
-	dirNameFunc      MangleFunc // language specific directory naming rules
+	initialized bool
+	formatFunc  FormatterFunc
 }
 
 // SetFormatFunc sets the formatting function for this language.
@@ -102,45 +95,30 @@ func (l *Options) Init() {
 		return
 	}
 
-	l.Mangler = mangling.NewNameMangler(
-		mangling.WithGoNamePrefixFunc(golangfuncs.PrefixForName),
-		mangling.WithAdditionalInitialisms(l.ExtraInitialisms...),
+	l.Mangler = mangling.MakeGoMangler(
+		mangling.WithGoInitialisms(l.ExtraInitialisms...),
 	)
 
 	l.initialized = true
-	l.reservedWordsSet = make(map[string]struct{})
-
-	for _, rw := range l.ReservedWords {
-		l.reservedWordsSet[rw] = struct{}{}
-	}
 }
 
-// MangleName makes sure a reserved word gets a safe name.
+// MangleName makes sure a string becomes a safe go identifier.
 func (l *Options) MangleName(name, suffix string) string {
-	if _, ok := l.reservedWordsSet[l.Mangler.ToFileName(name)]; !ok {
-		return name
+	if name == "" {
+		return suffix
 	}
 
-	return strings.Join([]string{name, suffix}, "_")
+	return l.Mangler.IdentExported(name)
 }
 
 // MangleVarName makes sure a reserved word gets a safe name.
 func (l *Options) MangleVarName(name string) string {
-	nm := l.Mangler.ToVarName(name)
-	if _, ok := l.reservedWordsSet[nm]; !ok {
-		return nm
-	}
-
-	return nm + "Var"
+	return l.Mangler.IdentUnexported(name)
 }
 
 // MangleFileName makes sure a file name gets a safe name.
 func (l *Options) MangleFileName(name string) string {
-	if l.fileNameFunc != nil {
-		return l.fileNameFunc(name)
-	}
-
-	return l.Mangler.ToFileName(name)
+	return l.Mangler.File(name)
 }
 
 // ManglePackageName makes sure a package gets a safe name.
@@ -149,12 +127,11 @@ func (l *Options) ManglePackageName(name, suffix string) string {
 	if name == "" {
 		return suffix
 	}
-	if l.dirNameFunc != nil {
-		name = l.dirNameFunc(name)
-	}
-	pth := filepath.ToSlash(filepath.Clean(name)) // preserve path
-	pkg := importAlias(pth)                       // drop path
-	return l.MangleName(l.Mangler.ToFileName(golangfuncs.PrefixForName(pkg)+pkg), suffix)
+
+	target := filepath.ToSlash(filepath.Clean(name)) // preserve path
+	short, _ := l.Mangler.Package(target)
+
+	return short
 }
 
 // ManglePackagePath makes sure a full package path gets a safe name.
@@ -163,11 +140,11 @@ func (l *Options) ManglePackagePath(name string, suffix string) string {
 	if name == "" {
 		return suffix
 	}
-	target := filepath.ToSlash(filepath.Clean(name)) // preserve path
-	parts := strings.Split(target, "/")
-	parts[len(parts)-1] = l.ManglePackageName(parts[len(parts)-1], suffix)
 
-	return strings.Join(parts, "/")
+	target := filepath.ToSlash(filepath.Clean(name)) // preserve path
+	_, fqn := l.Mangler.Package(target)
+
+	return fqn
 }
 
 // FormatContent formats a file with a language specific formatter.
@@ -205,10 +182,4 @@ func (l *Options) BaseImport(tgt string) string {
 	}
 
 	return ""
-}
-
-// importAlias extracts the last path component from a package import path.
-func importAlias(pkg string) string {
-	_, k := path.Split(pkg)
-	return k
 }
