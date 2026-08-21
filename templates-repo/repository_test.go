@@ -4,512 +4,635 @@
 package repo
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
+	"testing/fstest"
+	"text/template"
 
-	gentest "github.com/go-openapi/codegen/gentesting"
 	"github.com/go-openapi/testify/v2/assert"
 	"github.com/go-openapi/testify/v2/require"
 )
 
-func TestLoadDir_EmptyPath(t *testing.T) {
-	repo := NewRepository(nil)
-
-	err := repo.LoadDir("")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "could not complete")
+// dependentAssets declare a template that refers to another one, which is the shape every
+// override has to work through.
+func dependentAssets() fstest.MapFS {
+	return fstest.MapFS{
+		"root.gotmpl": {Data: []byte(`root=[{{template "leaf"}}]`)},
+		"leaf.gotmpl": {Data: []byte(`DEFAULT`)},
+	}
 }
 
-func TestLoadDir_ProtectedTemplateBlocks(t *testing.T) {
-	repo := NewRepository(nil)
-	repo.SetProtectedTemplates(map[string]bool{
-		"myProtected": true,
+func render(t *testing.T, r *Repository, name string) string {
+	t.Helper()
+
+	tpl, err := r.Get(name)
+	require.NoErrorf(t, err, "expected %q to be declared", name)
+
+	var out strings.Builder
+	require.NoError(t, tpl.Execute(&out, nil))
+
+	return out.String()
+}
+
+func TestNew(t *testing.T) {
+	t.Run("should declare a template per asset", func(t *testing.T) {
+		r, err := New(FromFS(fstest.MapFS{
+			"model.gotmpl":                {Data: []byte("model")},
+			"validation/primitive.gotmpl": {Data: []byte("primitive")},
+			"server/parameter.gotmpl":     {Data: []byte("parameter")},
+		}, ""))
+		require.NoError(t, err)
+
+		assert.Equal(t,
+			[]string{"model", "serverParameter", "validationPrimitive"},
+			slices.Collect(r.Names()),
+		)
 	})
 
-	// Create a temp dir with a .gotmpl that defines a protected template
-	dir := t.TempDir()
-	err := os.WriteFile(
-		filepath.Join(dir, "test.gotmpl"),
-		[]byte(`{{ define "myProtected" }}hello{{ end }}`),
-		0o600,
-	)
-	require.NoError(t, err)
+	t.Run("should declare the inner templates of an asset", func(t *testing.T) {
+		r, err := New(FromFS(fstest.MapFS{
+			"schema.gotmpl": {Data: []byte(`{{define "schemaBody"}}body{{end}}{{define "schemaType"}}type{{end}}`)},
+		}, ""))
+		require.NoError(t, err)
 
-	err = repo.LoadDir(dir)
-	require.Error(t, err)
-	assert.StringContainsT(t, err.Error(), "cannot overwrite protected template")
-}
-
-func TestLoadDir_Success(t *testing.T) {
-	repo := NewRepository(nil)
-
-	dir := t.TempDir()
-	err := os.WriteFile(
-		filepath.Join(dir, "greeting.gotmpl"),
-		[]byte(`hello world`),
-		0o600,
-	)
-	require.NoError(t, err)
-
-	err = repo.LoadDir(dir)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("greeting")
-	require.NoError(t, err)
-	require.NotNil(t, tmpl)
-}
-
-func TestSetAllowOverride(t *testing.T) {
-	repo := NewRepository(nil)
-	repo.SetProtectedTemplates(map[string]bool{
-		"secret": true,
+		assert.Equal(t,
+			[]string{"schema", "schemaSchemaBody", "schemaSchemaType"},
+			slices.Collect(r.Names()),
+		)
+		assert.Equal(t, "body", render(t, r, "schemaSchemaBody"))
 	})
 
-	// Seed the repo with the protected template
-	err := repo.addFile("secret.gotmpl", "original", true)
-	require.NoError(t, err)
+	t.Run("should ignore an asset with an unsupported extension", func(t *testing.T) {
+		r, err := New(FromFS(fstest.MapFS{
+			"model.gotmpl": {Data: []byte("model")},
+			"README.md":    {Data: []byte("not a template")},
+		}, ""))
+		require.NoError(t, err)
 
-	// Without allowOverride, adding a file that redefines "secret" fails
-	repo.SetAllowOverride(false)
-	err = repo.AddFile("other.gotmpl", `{{ define "secret" }}replaced{{ end }}`)
-	require.Error(t, err)
-	assert.StringContainsT(t, err.Error(), "cannot overwrite protected template secret")
-
-	// With allowOverride, it succeeds
-	repo.SetAllowOverride(true)
-	err = repo.AddFile("other.gotmpl", `{{ define "secret" }}replaced{{ end }}`)
-	require.NoError(t, err)
-}
-
-func TestShallowClone(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("hello", "world")
-	require.NoError(t, err)
-	repo.SetProtectedTemplates(map[string]bool{"hello": true})
-	repo.SetAllowOverride(true)
-
-	clone := repo.ShallowClone()
-
-	// clone has the same template
-	tmpl, err := clone.Get("hello")
-	require.NoError(t, err)
-	require.NotNil(t, tmpl)
-
-	// adding to clone doesn't affect original
-	err = clone.AddFile("extra", "data")
-	require.NoError(t, err)
-	_, err = repo.Get("extra")
-	require.Error(t, err)
-}
-
-func TestLoadDefaults(t *testing.T) {
-	repo := NewRepository(nil)
-
-	assets := map[string][]byte{
-		"greeting.gotmpl": []byte("hello {{ . }}"),
-		"farewell.gotmpl": []byte("goodbye {{ . }}"),
-	}
-	err := repo.LoadDefaults(assets)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("greeting")
-	require.NoError(t, err)
-	require.NotNil(t, tmpl)
-
-	tmpl, err = repo.Get("farewell")
-	require.NoError(t, err)
-	require.NotNil(t, tmpl)
-}
-
-func TestLoadDefaults_ParseError(t *testing.T) {
-	repo := NewRepository(nil)
-
-	assets := map[string][]byte{
-		"bad.gotmpl": []byte("{{ .Broken"),
-	}
-	err := repo.LoadDefaults(assets)
-	require.Error(t, err)
-}
-
-type mockAssetProvider struct {
-	assets map[string][]byte
-}
-
-func (m mockAssetProvider) AssetNames() []string {
-	names := make([]string, 0, len(m.assets))
-	for k := range m.assets {
-		names = append(names, k)
-	}
-	return names
-}
-
-func (m mockAssetProvider) MustAsset(name string) []byte {
-	return m.assets[name]
-}
-
-func TestLoadContrib(t *testing.T) {
-	repo := NewRepository(nil)
-	provider := mockAssetProvider{
-		assets: map[string][]byte{
-			"templates/contrib/mycontrib/model.gotmpl":  []byte("model template"),
-			"templates/contrib/mycontrib/server.gotmpl": []byte("server template"),
-			"templates/contrib/other/skip.gotmpl":       []byte("should be skipped"),
-			"templates/contrib/mycontrib/readme.md":     []byte("not a template"),
-		},
-	}
-
-	err := repo.LoadContrib("mycontrib", provider)
-	require.NoError(t, err)
-
-	_, err = repo.Get("model")
-	require.NoError(t, err)
-	_, err = repo.Get("server")
-	require.NoError(t, err)
-
-	// "skip" from another contrib should not be loaded
-	_, err = repo.Get("skip")
-	require.Error(t, err)
-}
-
-func TestLoadContrib_NoFiles(t *testing.T) {
-	repo := NewRepository(nil)
-	provider := mockAssetProvider{
-		assets: map[string][]byte{
-			"templates/contrib/other/model.gotmpl": []byte("wrong contrib"),
-		},
-	}
-
-	err := repo.LoadContrib("nonexistent", provider)
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "no files added")
-}
-
-func TestMustGet(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("present", "content")
-	require.NoError(t, err)
-
-	// success
-	tmpl := repo.MustGet("present")
-	require.NotNil(t, tmpl)
-
-	// panic on missing
-	assert.Panics(t, func() {
-		repo.MustGet("missing")
+		assert.Equal(t, []string{"model"}, slices.Collect(r.Names()))
 	})
-}
 
-func TestGet_NotFound(t *testing.T) {
-	repo := NewRepository(nil)
-	_, err := repo.Get("nonexistent")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "template doesn't exist")
-}
-
-func TestAddFile_ParseError(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("bad", "{{ .Broken")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "failed to load template")
-}
-
-func TestDumpTemplates(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("base", `base content {{ template "sub" }}`)
-	require.NoError(t, err)
-
-	err = repo.AddFile("sub", `sub content`)
-	require.NoError(t, err)
-
-	defer gentest.DiscardOutput()()
-	require.NotPanics(t, func() {
-		repo.DumpTemplates()
-	})
-}
-
-func TestFuncs(t *testing.T) {
-	fm := make(map[string]any)
-	fm["myfunc"] = func() string { return "hi" }
-	repo := NewRepository(fm)
-
-	funcs := repo.Funcs()
-	require.NotNil(t, funcs["myfunc"])
-}
-
-func TestFuncs_NilInit(t *testing.T) {
-	repo := NewRepository(nil)
-	funcs := repo.Funcs()
-	require.NotNil(t, funcs)
-}
-
-func TestDependencies_TemplateNode(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("child", "child content")
-	require.NoError(t, err)
-	err = repo.AddFile("parent", `parent calls {{ template "child" }}`)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("parent")
-	require.NoError(t, err)
-
-	// executing should work since dependency is resolved
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, nil)
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "child content")
-}
-
-func TestDependencies_MissingDep(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("orphan", `calls {{ template "missing" }}`)
-	require.NoError(t, err)
-
-	_, err = repo.Get("orphan")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "could not find template missing")
-}
-
-func TestDependencies_IfNode(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("ifchild", "if-child")
-	require.NoError(t, err)
-	err = repo.AddFile("elsechild", "else-child")
-	require.NoError(t, err)
-	err = repo.AddFile("iftpl", `{{ if . }}{{ template "ifchild" }}{{ else }}{{ template "elsechild" }}{{ end }}`)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("iftpl")
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, true)
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "if-child")
-
-	buf.Reset()
-	err = tmpl.Execute(&buf, false)
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "else-child")
-}
-
-func TestDependencies_RangeNode(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("item", "item:{{ . }}")
-	require.NoError(t, err)
-	err = repo.AddFile("rangetpl", `{{ range . }}{{ template "item" . }}{{ end }}`)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("rangetpl")
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, []string{"a", "b"})
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "item:a")
-	assert.StringContainsT(t, buf.String(), "item:b")
-}
-
-func TestDependencies_WithNode(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("withchild", "with-child:{{ . }}")
-	require.NoError(t, err)
-	err = repo.AddFile("withtpl", `{{ with . }}{{ template "withchild" . }}{{ end }}`)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("withtpl")
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, "data")
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "with-child:data")
-}
-
-func TestDependencies_Transitive(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("leaf", "leaf")
-	require.NoError(t, err)
-	err = repo.AddFile("mid", `mid->{{ template "leaf" }}`)
-	require.NoError(t, err)
-	err = repo.AddFile("root", `root->{{ template "mid" }}`)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("root")
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, nil)
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "root->mid->leaf")
-}
-
-func TestFindDependencies_Nil(t *testing.T) {
-	deps := findDependencies(nil)
-	assert.Nil(t, deps)
-}
-
-func TestLoadContrib_ParseError(t *testing.T) {
-	repo := NewRepository(nil)
-	provider := mockAssetProvider{
-		assets: map[string][]byte{
-			"templates/contrib/bad/broken.gotmpl": []byte("{{ .Broken"),
-		},
-	}
-
-	err := repo.LoadContrib("bad", provider)
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "failed to load template")
-}
-
-func TestDependencies_RangeWithElse(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("rangeitem", "item")
-	require.NoError(t, err)
-	err = repo.AddFile("rangeempty", "empty")
-	require.NoError(t, err)
-	err = repo.AddFile("rangeelse", `{{ range . }}{{ template "rangeitem" }}{{ else }}{{ template "rangeempty" }}{{ end }}`)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("rangeelse")
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, []string{})
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "empty")
-}
-
-func TestDependencies_WithElse(t *testing.T) {
-	repo := NewRepository(nil)
-	err := repo.AddFile("withpresent", "present")
-	require.NoError(t, err)
-	err = repo.AddFile("withnil", "nil")
-	require.NoError(t, err)
-	err = repo.AddFile("withelse", `{{ with . }}{{ template "withpresent" }}{{ else }}{{ template "withnil" }}{{ end }}`)
-	require.NoError(t, err)
-
-	tmpl, err := repo.Get("withelse")
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, nil)
-	require.NoError(t, err)
-	assert.StringContainsT(t, buf.String(), "nil")
-}
-
-const (
-// Test template environment.
-)
-
-func TestRepoLoadingTemplates(t *testing.T) {
-	const singleTemplate = `test`
-
-	repo := NewRepository(nil)
-	require.NoError(t, repo.AddFile("simple", singleTemplate))
-	templ, err := repo.Get("simple")
-	require.NoError(t, err)
-
-	var b bytes.Buffer
-	require.NoError(t, templ.Execute(&b, nil))
-	assert.EqualT(t, "test", b.String())
-}
-
-const (
-	multipleDefinitions = `{{ define "T1" }}T1{{end}}{{ define "T2" }}T2{{end}}`
-	dependantTemplate   = `{{ template "T1" }}D1`
-)
-
-func TestRepoLoadsAllTemplatesDefined(t *testing.T) {
-	var b bytes.Buffer
-	repo := NewRepository(nil)
-	require.NoError(t, repo.AddFile("multiple", multipleDefinitions))
-	templ, err := repo.Get("multiple")
-	require.NoError(t, err)
-	require.NoError(t, templ.Execute(&b, nil))
-	assert.Empty(t, b.String())
-	templ, err = repo.Get("T1")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-	require.NoError(t, templ.Execute(&b, nil))
-	assert.EqualT(t, "T1", b.String())
-}
-
-type testData struct {
-	Children []testData
-	Name     string
-	Recurse  bool
-}
-
-func TestRepoLoadsAllDependantTemplates(t *testing.T) {
-	var b bytes.Buffer
-	repo := NewRepository(nil)
-	require.NoError(t, repo.AddFile("multiple", multipleDefinitions))
-	require.NoError(t, repo.AddFile("dependant", dependantTemplate))
-	templ, err := repo.Get("dependant")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-	require.NoError(t, templ.Execute(&b, nil))
-	assert.EqualT(t, "T1D1", b.String())
-}
-
-func TestTemplates_RepoRecursiveTemplates(t *testing.T) {
-	const (
-		cirularDeps1 = `{{ define "T1" }}{{ .Name }}: {{ range .Children }}{{ template "T2" . }}{{end}}{{end}}{{template "T1" . }}`
-		cirularDeps2 = `{{ define "T2" }}{{if .Recurse }}{{ template "T1" . }}{{ else }}Children{{end}}{{end}}`
-		root         = "Root"
-	)
-
-	repo := NewRepository(nil)
-	require.NoError(t, repo.AddFile("c1", cirularDeps1))
-	require.NoError(t, repo.AddFile("c2", cirularDeps2))
-	templ, err := repo.Get("c1")
-	require.NoError(t, err)
-	require.NotNil(t, templ)
-
-	t.Run("should not recurse", func(t *testing.T) {
-		var b bytes.Buffer
-		data := testData{
-			Name: root,
-			Children: []testData{
-				{Recurse: false},
-			},
+	t.Run("should read every directory when the source skips none", func(t *testing.T) {
+		assets := fstest.MapFS{
+			"model.gotmpl":              {Data: []byte("model")},
+			"contrib/mine/model.gotmpl": {Data: []byte("mine")},
+			"nested/contrib/one.gotmpl": {Data: []byte("nested")},
+			"kept/keeper.gotmpl":        {Data: []byte("kept")},
 		}
 
-		require.NoError(t, templ.Execute(&b, data))
-
-		const expected = `Root: Children`
-		assert.EqualT(t, expected, b.String())
+		all, err := New(FromFS(assets, ""))
+		require.NoError(t, err)
+		assert.Equal(t,
+			[]string{"contribMineModel", "keptKeeper", "model", "nestedContribOne"},
+			slices.Collect(all.Names()),
+		)
 	})
 
-	t.Run("should recurse", func(t *testing.T) {
-		var b bytes.Buffer
-		data := testData{
-			Name: root,
-			Children: []testData{
-				{Name: "Child1", Recurse: true, Children: []testData{{Name: "Child2"}}},
-			},
+	t.Run("should skip the directories a source declares as skipped", func(t *testing.T) {
+		assets := fstest.MapFS{
+			"model.gotmpl":              {Data: []byte("model")},
+			"contrib/mine/model.gotmpl": {Data: []byte("mine")},
+			"nested/contrib/one.gotmpl": {Data: []byte("nested")},
+			"kept/keeper.gotmpl":        {Data: []byte("kept")},
 		}
 
-		require.NoError(t, templ.Execute(&b, data))
-
-		const expected = `Root: Child1: Children`
-		assert.EqualT(t, expected, b.String())
+		r, err := New(FromFS(assets, "", SkipDirectories("contrib")))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"keptKeeper", "model"}, slices.Collect(r.Names()))
 	})
 
-	t.Run("should not recurse", func(t *testing.T) {
-		var b bytes.Buffer
-		data := testData{
-			Name: root,
-			Children: []testData{
-				{Name: "Child1", Recurse: false, Children: []testData{{Name: "Child2"}}},
-			},
+	t.Run("should skip for the source that says so, and no other", func(t *testing.T) {
+		// what one source leaves out says nothing about a set someone else brings
+		shipped := fstest.MapFS{"contrib/mine/model.gotmpl": {Data: []byte("shipped")}}
+		brought := fstest.MapFS{"contrib/theirs/model.gotmpl": {Data: []byte("brought")}}
+
+		r, err := New(
+			FromFS(shipped, "", SkipDirectories("contrib")),
+			FromFS(brought, ""),
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"contribTheirsModel"}, slices.Collect(r.Names()))
+	})
+
+	t.Run("should build an empty repository from no source at all", func(t *testing.T) {
+		r, err := New()
+		require.NoError(t, err)
+
+		assert.Empty(t, slices.Collect(r.Names()))
+		assert.False(t, r.Has("anything"))
+	})
+
+	t.Run("should not declare the namespace itself", func(t *testing.T) {
+		r, err := New(FromFS(dependentAssets(), ""))
+		require.NoError(t, err)
+
+		assert.False(t, r.Has(namespaceName))
+		_, err = r.Get(namespaceName)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+	})
+
+	t.Run("should build the same repository from the same sources", func(t *testing.T) {
+		assets := fstest.MapFS{
+			"a.gotmpl": {Data: []byte(`a=[{{template "b"}}]`)},
+			"b.gotmpl": {Data: []byte(`b`)},
+			"c.gotmpl": {Data: []byte(`c`)},
 		}
 
-		require.NoError(t, templ.Execute(&b, data))
+		first, err := New(FromFS(assets, ""))
+		require.NoError(t, err)
+		second, err := New(FromFS(assets, ""))
+		require.NoError(t, err)
 
-		const expected = `Root: Children`
-		assert.EqualT(t, expected, b.String())
+		assert.Equal(t, slices.Collect(first.Names()), slices.Collect(second.Names()))
+		assert.Equal(t, render(t, first, "a"), render(t, second, "a"))
+	})
+}
+
+// TestOverride covers the failure both earlier implementations had, in opposite ways: an
+// override that reaches the templates depending on it.
+func TestOverride(t *testing.T) {
+	t.Run("should reach the templates depending on it", func(t *testing.T) {
+		r, err := New(
+			FromFS(dependentAssets(), ""),
+			FromTemplate("leaf.gotmpl", []byte("OVERRIDDEN")),
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, "OVERRIDDEN", render(t, r, "leaf"))
+		assert.Equal(t, "root=[OVERRIDDEN]", render(t, r, "root"))
+	})
+
+	t.Run("should reach them when the override comes from a clone", func(t *testing.T) {
+		r, err := New(FromFS(dependentAssets(), ""))
+		require.NoError(t, err)
+		require.Equal(t, "root=[DEFAULT]", render(t, r, "root"))
+
+		clone, err := Clone(r, FromTemplate("leaf.gotmpl", []byte("OVERRIDDEN")))
+		require.NoError(t, err)
+
+		assert.Equal(t, "root=[OVERRIDDEN]", render(t, clone, "root"))
+	})
+
+	t.Run("should let the last source win", func(t *testing.T) {
+		r, err := New(
+			FromFS(fstest.MapFS{"leaf.gotmpl": {Data: []byte("FIRST")}}, ""),
+			FromFS(fstest.MapFS{"leaf.gotmpl": {Data: []byte("SECOND")}}, ""),
+			FromFS(fstest.MapFS{"leaf.gotmpl": {Data: []byte("THIRD")}}, ""),
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, "THIRD", render(t, r, "leaf"))
+	})
+
+	t.Run("should override a define at the address it is declared at", func(t *testing.T) {
+		// a define lives under the asset declaring it, so replacing one means declaring that asset
+		r, err := New(
+			FromFS(fstest.MapFS{
+				"schema.gotmpl": {Data: []byte(`{{define "schemaBody"}}DEFAULT{{end}}`)},
+				"user.gotmpl":   {Data: []byte(`user=[{{template "schemaBody"}}]`)},
+			}, ""),
+			FromTemplate("schema.gotmpl", []byte(`{{define "schemaBody"}}OVERRIDDEN{{end}}`)),
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, "user=[OVERRIDDEN]", render(t, r, "user"))
+	})
+
+	t.Run("should refuse an override that would silently not replace", func(t *testing.T) {
+		_, err := New(
+			FromFS(fstest.MapFS{"leaf.gotmpl": {Data: []byte("DEFAULT")}}, ""),
+			FromTemplate("leaf.gotmpl", []byte("   {{/* nothing at all */}}   ")),
+		)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+		assert.ErrorContains(t, err, "would not replace")
+	})
+
+	t.Run("should accept an override that renders nothing on purpose", func(t *testing.T) {
+		r, err := New(
+			FromFS(fstest.MapFS{"leaf.gotmpl": {Data: []byte("DEFAULT")}}, ""),
+			FromTemplate("leaf.gotmpl", []byte(`{{""}}`)),
+		)
+		require.NoError(t, err)
+
+		assert.Empty(t, render(t, r, "leaf"))
+	})
+}
+
+// TestCloneIsolation covers the other half of the mutation problem: what a clone changes must
+// not reach the repository it was derived from, nor a sibling clone.
+func TestCloneIsolation(t *testing.T) {
+	origin, err := New(FromFS(dependentAssets(), ""))
+	require.NoError(t, err)
+
+	first, err := Clone(origin, FromTemplate("leaf.gotmpl", []byte("FROM-FIRST")))
+	require.NoError(t, err)
+
+	second, err := Clone(origin, FromTemplate("leaf.gotmpl", []byte("FROM-SECOND")))
+	require.NoError(t, err)
+
+	t.Run("should isolate a clone from its origin", func(t *testing.T) {
+		assert.Equal(t, "root=[DEFAULT]", render(t, origin, "root"))
+	})
+
+	t.Run("should isolate sibling clones from one another", func(t *testing.T) {
+		assert.Equal(t, "root=[FROM-FIRST]", render(t, first, "root"))
+		assert.Equal(t, "root=[FROM-SECOND]", render(t, second, "root"))
+	})
+
+	t.Run("should isolate a clone of a clone", func(t *testing.T) {
+		third, err := Clone(first, FromTemplate("leaf.gotmpl", []byte("FROM-THIRD")))
+		require.NoError(t, err)
+
+		assert.Equal(t, "root=[FROM-THIRD]", render(t, third, "root"))
+		assert.Equal(t, "root=[FROM-FIRST]", render(t, first, "root"))
+		assert.Equal(t, "root=[DEFAULT]", render(t, origin, "root"))
+	})
+
+	t.Run("should carry the settings of the origin over", func(t *testing.T) {
+		origin, err := New(
+			FromFS(fstest.MapFS{"a.tmpl": {Data: []byte("a")}}, ""),
+			WithExtensions(".tmpl"),
+		)
+		require.NoError(t, err)
+
+		clone, err := Clone(origin, FromFS(fstest.MapFS{"b.tmpl": {Data: []byte("b")}}, ""))
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"a", "b"}, slices.Collect(clone.Names()))
+	})
+
+	t.Run("should report a nil origin", func(t *testing.T) {
+		_, err := Clone(nil)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+	})
+}
+
+func TestFuncMap(t *testing.T) {
+	shout := template.FuncMap{"shout": strings.ToUpper}
+
+	t.Run("should bind functions to every template", func(t *testing.T) {
+		r, err := New(
+			FromFS(fstest.MapFS{"a.gotmpl": {Data: []byte(`{{ shout "hi" }}`)}}, ""),
+			WithFuncMap(shout),
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, "HI", render(t, r, "a"))
+	})
+
+	t.Run("should report a template calling an unknown function", func(t *testing.T) {
+		_, err := New(FromFS(fstest.MapFS{"a.gotmpl": {Data: []byte(`{{ shout "hi" }}`)}}, ""))
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+	})
+
+	t.Run("should let a clone add a function that reaches the templates already there", func(t *testing.T) {
+		origin, err := New(
+			FromFS(fstest.MapFS{"a.gotmpl": {Data: []byte(`{{ shout "hi" }}`)}}, ""),
+			WithFuncMap(shout),
+		)
+		require.NoError(t, err)
+
+		clone, err := Clone(origin, WithFuncMap(template.FuncMap{"shout": strings.ToLower}))
+		require.NoError(t, err)
+
+		assert.Equal(t, "hi", render(t, clone, "a"), "the clone re-parses, so the new function applies")
+		assert.Equal(t, "HI", render(t, origin, "a"), "the origin keeps the function it was built with")
+	})
+
+	t.Run("should not share a function map between repositories", func(t *testing.T) {
+		funcs := template.FuncMap{"shout": strings.ToUpper}
+
+		first, err := New(FromFS(fstest.MapFS{"a.gotmpl": {Data: []byte(`{{ shout "hi" }}`)}}, ""), WithFuncMap(funcs))
+		require.NoError(t, err)
+
+		// a caller mutating the map it passed must not reach the repository it built with it
+		funcs["shout"] = strings.ToLower
+		assert.Equal(t, "HI", render(t, first, "a"))
+
+		second, err := New(FromFS(fstest.MapFS{"b.gotmpl": {Data: []byte(`{{ shout "hi" }}`)}}, ""))
+		require.Error(t, err, "the defaults of the first repository must not have leaked into the second")
+		assert.Nil(t, second)
+	})
+}
+
+func TestDependencies(t *testing.T) {
+	t.Run("should report a template referring to an undeclared one", func(t *testing.T) {
+		_, err := New(FromFS(fstest.MapFS{
+			"root.gotmpl": {Data: []byte(`{{template "nowhere"}}`)},
+		}, ""))
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+		assert.ErrorContains(t, err, `"root" refers to "nowhere", which it cannot reach`)
+	})
+
+	t.Run("should report every missing dependency at once", func(t *testing.T) {
+		_, err := New(FromFS(fstest.MapFS{
+			"a.gotmpl": {Data: []byte(`{{template "missingOne"}}`)},
+			"b.gotmpl": {Data: []byte(`{{template "missingTwo"}}`)},
+		}, ""))
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "missingOne")
+		assert.ErrorContains(t, err, "missingTwo")
+	})
+
+	t.Run("should find a dependency nested in a control structure", func(t *testing.T) {
+		_, err := New(FromFS(fstest.MapFS{
+			"root.gotmpl": {Data: []byte(
+				`{{if .}}{{range .}}{{with .}}{{template "deep"}}{{end}}{{end}}{{else}}{{template "otherwise"}}{{end}}`,
+			)},
+		}, ""))
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "deep")
+		assert.ErrorContains(t, err, "otherwise")
+	})
+
+	t.Run("should accept a dependency declared by another asset", func(t *testing.T) {
+		r, err := New(FromFS(dependentAssets(), ""))
+		require.NoError(t, err)
+
+		assert.Equal(t, "root=[DEFAULT]", render(t, r, "root"))
+	})
+}
+
+func TestGet(t *testing.T) {
+	r, err := New(FromFS(dependentAssets(), ""))
+	require.NoError(t, err)
+
+	t.Run("should report an undeclared name", func(t *testing.T) {
+		_, err := r.Get("nowhere")
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+	})
+
+	t.Run("should report the asset a template comes from", func(t *testing.T) {
+		assetPath, declared := r.AssetOf("leaf")
+		assert.True(t, declared)
+		assert.Equal(t, "leaf.gotmpl", assetPath)
+
+		_, declared = r.AssetOf("nowhere")
+		assert.False(t, declared)
+	})
+
+	t.Run("should panic on MustGet of an undeclared name", func(t *testing.T) {
+		assert.Panics(t, func() { _ = r.MustGet("nowhere") })
+		assert.NotPanics(t, func() { _ = r.MustGet("leaf") })
+	})
+
+	t.Run("should report the name of the template it returns", func(t *testing.T) {
+		tpl, err := r.Get("leaf")
+		require.NoError(t, err)
+		assert.Equal(t, "leaf", tpl.Name())
+	})
+
+	t.Run("should report the zero template as unusable", func(t *testing.T) {
+		var zero Template
+
+		assert.Empty(t, zero.Name())
+		assert.ErrorIs(t, zero.Execute(&strings.Builder{}, nil), ErrTemplateRepo)
+	})
+
+	t.Run("should report an execution failure", func(t *testing.T) {
+		failing, err := New(FromFS(fstest.MapFS{"a.gotmpl": {Data: []byte(`{{ .Missing }}`)}}, ""))
+		require.NoError(t, err)
+
+		tpl, err := failing.Get("a")
+		require.NoError(t, err)
+
+		err = tpl.Execute(&strings.Builder{}, struct{ Present string }{})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+		assert.ErrorContains(t, err, `executing template "a"`)
+	})
+}
+
+// TestConcurrency exercises the contract the type advertises: a sealed repository is read
+// concurrently, and cloning one reads it without disturbing it. Run under -race.
+func TestConcurrency(t *testing.T) {
+	origin, err := New(FromFS(dependentAssets(), ""))
+	require.NoError(t, err)
+
+	const readers, cloners = 16, 8
+
+	var wg sync.WaitGroup
+	wg.Add(readers + cloners)
+
+	for range readers {
+		go func() {
+			defer wg.Done()
+
+			for range 50 {
+				tpl, err := origin.Get("root")
+				assert.NoError(t, err)
+
+				var out strings.Builder
+				assert.NoError(t, tpl.Execute(&out, nil))
+				assert.Equal(t, "root=[DEFAULT]", out.String())
+			}
+		}()
+	}
+
+	for i := range cloners {
+		go func() {
+			defer wg.Done()
+
+			for range 10 {
+				clone, err := Clone(origin, FromTemplate("leaf.gotmpl", []byte(strings.Repeat("X", i+1))))
+				assert.NoError(t, err)
+
+				var out strings.Builder
+				tpl, err := clone.Get("root")
+				assert.NoError(t, err)
+				assert.NoError(t, tpl.Execute(&out, nil))
+				assert.Equal(t, "root=["+strings.Repeat("X", i+1)+"]", out.String())
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	assert.Equal(t, "root=[DEFAULT]", render(t, origin, "root"))
+}
+
+// TestScoping documents how a reference is resolved: mangled to a key, then looked for outward
+// from the template holding it - its own children, its directory, each enclosing directory, the
+// root. The nearest match wins, and a "define" reaches no further than the directory it sits in.
+func TestScoping(t *testing.T) {
+	assets := fstest.MapFS{
+		"server/fred.gotmpl":                 {Data: []byte(`{{define "inner-macro"}}MACRO{{end}}fred=[{{template "inner-macro" .}}]`)},
+		"server/operations/operation.gotmpl": {Data: []byte(`{{define "deep"}}DEEP{{end}}op`)},
+		"server/claude.gotmpl":               {Data: []byte(`claude`)},
+		"client/swagger.gotmpl":              {Data: []byte(`swagger`)},
+	}
+
+	r, err := New(FromFS(assets, ""))
+	require.NoError(t, err)
+
+	t.Run("should address a define under the asset declaring it", func(t *testing.T) {
+		assert.Equal(t, []string{
+			"clientSwagger", "serverClaude", "serverFred", "serverFredInnerMacro",
+			"serverOperationsOperation", "serverOperationsOperationDeep",
+		}, slices.Collect(r.Names()))
+	})
+
+	t.Run("should map an address onto the name it answers to", func(t *testing.T) {
+		name := r.NameOf("server/fred/inner-macro")
+		assert.Equal(t, "serverFredInnerMacro", name)
+		assert.True(t, r.Has(name))
+
+		address, found := r.AddressOf("serverFredInnerMacro")
+		assert.True(t, found)
+		assert.Equal(t, "server/fred/inner-macro", address)
+
+		assert.False(t, r.Has(r.NameOf("inner-macro")), "a define is not addressed at the root")
+	})
+
+	t.Run("should let a template reach its own define by the name it gave it", func(t *testing.T) {
+		assert.Equal(t, "fred=[MACRO]", render(t, r, "serverFred"))
+	})
+
+	for _, reference := range []string{
+		"serverFred",                    // by key, from the root
+		"serverFredInnerMacro",          // a define, by key
+		"serverOperationsOperationDeep", // a define of a deeper directory, by key
+		"fred",                          // relative to the caller's own directory
+		"fredInnerMacro",                // a define of a sibling, relative
+		"operationsOperation",           // relative, through a directory
+		"inner-macro",                   // the bare name of a sibling's define
+	} {
+		t.Run("should resolve "+reference+" from a sibling", func(t *testing.T) {
+			reaching, err := Clone(r, FromTemplate("server/reaching.gotmpl",
+				[]byte(`[{{template "`+reference+`" .}}]`)))
+			require.NoErrorf(t, err, "expected %q to resolve from server/", reference)
+			assert.NotEmpty(t, render(t, reaching, "serverReaching"))
+		})
+	}
+
+	for _, reference := range []string{
+		"fred",           // a sibling of server/, not of client/
+		"fredInnerMacro", // likewise
+		"inner-macro",    // a define reaches no further than its own directory
+		"operation",      // no deep search: server/operation does not exist
+	} {
+		t.Run("should refuse "+reference+" from another directory", func(t *testing.T) {
+			_, err := Clone(r, FromTemplate("client/reaching.gotmpl",
+				[]byte(`[{{template "`+reference+`" .}}]`)))
+			require.Errorf(t, err, "expected %q not to resolve from client/", reference)
+			assert.ErrorIs(t, err, ErrTemplateRepo)
+		})
+	}
+
+	t.Run("should let the nearest scope shadow the ones outside it", func(t *testing.T) {
+		shadowing, err := Clone(r,
+			FromTemplate("swagger.gotmpl", []byte(`ROOT`)),
+			FromTemplate("client/reaching.gotmpl", []byte(`[{{template "swagger" .}}]`)),
+		)
+		require.NoError(t, err)
+
+		// client/swagger stands nearer than the swagger at the root
+		assert.Equal(t, "[swagger]", render(t, shadowing, "clientReaching"))
+	})
+}
+
+// TestCollision covers what a repository cannot tell apart, and what it takes as an override.
+// Overriding is declaring the same address again; two addresses answering to one reference is not.
+func TestCollision(t *testing.T) {
+	t.Run("should refuse two assets of a directory declaring the same define", func(t *testing.T) {
+		_, err := New(FromFS(fstest.MapFS{
+			"one.gotmpl": {Data: []byte(`{{define "shared"}}FROM-ONE{{end}}`)},
+			"two.gotmpl": {Data: []byte(`{{define "shared"}}FROM-TWO{{end}}`)},
+		}, ""))
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+		assert.ErrorContains(t, err, `both declare "shared"`)
+	})
+
+	t.Run("should refuse it across sources too, an address being no layer's to take", func(t *testing.T) {
+		_, err := New(
+			FromFS(fstest.MapFS{"one.gotmpl": {Data: []byte(`{{define "shared"}}FROM-ONE{{end}}`)}}, ""),
+			FromFS(fstest.MapFS{"two.gotmpl": {Data: []byte(`{{define "shared"}}FROM-TWO{{end}}`)}}, ""),
+		)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, `both declare "shared"`)
+	})
+
+	t.Run("should let a define of another directory carry the same name", func(t *testing.T) {
+		r, err := New(FromFS(fstest.MapFS{
+			"one.gotmpl":      {Data: []byte(`{{define "shared"}}FROM-ONE{{end}}one=[{{template "shared"}}]`)},
+			"deep/two.gotmpl": {Data: []byte(`{{define "shared"}}FROM-TWO{{end}}two=[{{template "shared"}}]`)},
+		}, ""))
+		require.NoError(t, err)
+
+		assert.Equal(t, "one=[FROM-ONE]", render(t, r, "one"))
+		assert.Equal(t, "two=[FROM-TWO]", render(t, r, "deepTwo"))
+	})
+
+	t.Run("should report two asset paths that yield the same key", func(t *testing.T) {
+		_, err := New(FromFS(fstest.MapFS{
+			"some-name.gotmpl": {Data: []byte("kebab")},
+			"some_name.gotmpl": {Data: []byte("snake")},
+		}, ""))
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, `template "some_name" is declared by assets`)
+	})
+
+	t.Run("should let a caller's own define outrank an asset of the same name", func(t *testing.T) {
+		r, err := New(FromFS(fstest.MapFS{
+			"model.gotmpl": {Data: []byte("ASSET")},
+			"other.gotmpl": {Data: []byte(`{{define "model"}}DEFINE{{end}}other=[{{template "model"}}]`)},
+		}, ""))
+		require.NoError(t, err)
+
+		// the nearest scope wins, and a template's own define is as near as it gets
+		assert.Equal(t, "other=[DEFINE]", render(t, r, "other"))
+	})
+
+	t.Run("should refuse a reference an asset and a define both answer", func(t *testing.T) {
+		// from a third template the two stand at the same distance, and nothing says which is meant
+		_, err := New(FromFS(fstest.MapFS{
+			"model.gotmpl": {Data: []byte("ASSET")},
+			"other.gotmpl": {Data: []byte(`{{define "model"}}DEFINE{{end}}other`)},
+			"third.gotmpl": {Data: []byte(`third=[{{template "model"}}]`)},
+		}, ""))
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTemplateRepo)
+		assert.ErrorContains(t, err, "which is both the template addressed")
+	})
+
+	t.Run("should take a further source declaring the same address as an override", func(t *testing.T) {
+		r, err := New(
+			FromFS(fstest.MapFS{"one.gotmpl": {Data: []byte(`{{define "shared"}}FROM-ONE{{end}}`)}}, ""),
+			FromTemplate("one.gotmpl", []byte(`{{define "shared"}}FROM-TWO{{end}}`)),
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, "FROM-TWO", render(t, r, "oneShared"))
+	})
+
+	t.Run("should take a clone declaring the same address as an override", func(t *testing.T) {
+		origin, err := New(FromFS(fstest.MapFS{"one.gotmpl": {Data: []byte(`{{define "shared"}}ORIGIN{{end}}`)}}, ""))
+		require.NoError(t, err)
+
+		clone, err := Clone(origin, FromTemplate("one.gotmpl", []byte(`{{define "shared"}}CLONE{{end}}`)))
+		require.NoError(t, err)
+
+		assert.Equal(t, "CLONE", render(t, clone, "oneShared"))
+		assert.Equal(t, "ORIGIN", render(t, origin, "oneShared"))
 	})
 }
