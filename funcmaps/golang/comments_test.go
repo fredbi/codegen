@@ -115,7 +115,7 @@ func TestWrapBlockComment(t *testing.T) {
 // TestCommentHelpersRegistered ensures the helpers are wired into the funcmap
 // under their template-facing names.
 func TestCommentHelpersRegistered(t *testing.T) {
-	fm := testMap()
+	fm := testGoMap()
 	assert.Contains(t, fm, "lineComment")
 	assert.Contains(t, fm, "linePadComment")
 	assert.Contains(t, fm, "blockComment")
