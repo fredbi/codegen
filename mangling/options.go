@@ -155,6 +155,15 @@ func WithTokenSeparator(separator func(rune) bool) TokenOption {
 	}
 }
 
+// WithExtraTokenSeparator appends new separators to the default list.
+func WithExtraTokenSeparator(extras ...rune) TokenOption {
+	return func(o tokenOptions) tokenOptions {
+		o.separator = customTokenSeparatorFunc(extras)
+
+		return o
+	}
+}
+
 // WithTokenOptions bundles token-level options into a single mangler [Option].
 //
 // Use it to pass tokenizer settings (such as [WithTokenSeparator]) when configuring a [Mangler].
@@ -176,7 +185,7 @@ func WithTokenOptions(opts ...TokenOption) Option {
 //   - segmentation: a rune in the set is a single-rune *symbol token*; a rune not in the set falls to the category
 //     rules and is typically a separator. So adding ',' makes "a,b" tokenize as [a , b] (→ verbalizable), while removing
 //     '@' makes "a@b" tokenize as [a b] (the '@' becomes a separator, dropped).
-//   - verbalization: under a target's verbalize policy, the word is what the assembler emits ("@" → "at").
+//   - verbalization: under a target's verbalize policy, the assembler emits the word ("@" → "at").
 //
 // Repeated calls accumulate. Applies to the base [Mangler] and, via [WithManglerOptions], to the [GoMangler].
 func WithSymbolWords(words map[rune]string) Option {

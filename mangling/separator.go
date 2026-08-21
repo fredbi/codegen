@@ -45,6 +45,25 @@ func defaultTokenSeparator(r rune) bool {
 	return separatorForRune(r, defaultSymbolWords)
 }
 
+func customTokenSeparatorFunc(extraSeparators []rune) func(rune) bool {
+	onlyNewSeparators := make(map[rune]struct{}, len(extraSeparators))
+	for _, r := range extraSeparators {
+		if defaultTokenSeparator(r) {
+			continue
+		}
+		onlyNewSeparators[r] = struct{}{}
+	}
+
+	return func(r rune) bool {
+		if defaultTokenSeparator(r) {
+			return true
+		}
+		_, ok := onlyNewSeparators[r]
+
+		return ok
+	}
+}
+
 // asciiSeparator caches the default-set separator decision for every ASCII rune, filled in init.
 var asciiSeparator [utf8.RuneSelf]bool
 

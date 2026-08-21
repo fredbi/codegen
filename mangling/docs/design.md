@@ -130,7 +130,7 @@ Go-specific naming rules live:
 
 Repair is applied only where a collision can actually occur, for **minimum distortion**: `type`
 unexported becomes `typeVar`, but `type` exported stays `Type` — a perfectly good name that needs no
-mangling. The explicit `IdentExported` / `IdentUnexported` split is what earns this; every generated
+mangling. The explicit `IdentExported` / `IdentUnexported` split earns this; every generated
 symbol calls the mangler once and lands with the least distortion for its role.
 
 Path-returning targets (`Package`, `Module`) preprocess the path themselves — split on the last `/`,
@@ -143,7 +143,7 @@ A ruleset carries its dictionaries (initialisms, reserved words, repair tokens) 
 targets together. Targets hold the recipe only; the dictionaries live on the mangler and bind to the
 stages at run time, so the same target degrades gracefully across manglers — a `GoMangler` target
 run on a bare `Mangler` simply finds no initialisms. Go is the only concrete ruleset today, but the
-seam is where another language would plug in.
+seam is the point another language would plug in at.
 
 ## Immutability and concurrency
 

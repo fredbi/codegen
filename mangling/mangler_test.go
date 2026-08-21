@@ -36,6 +36,21 @@ func TestMangler(t *testing.T) {
 			t.Run(tc.name, testMangler(m, testModeASCIIMangler, tc))
 		}
 	})
+
+	t.Run("with extra separator", func(t *testing.T) {
+		t.Parallel()
+
+		const pth = "a:/folder/file"
+		t.Run("default should verbalize / (not a default separator)", func(t *testing.T) {
+			b := MakeMangler() // default
+			assert.Equal(t, "aSlashFolderSlashFile", b.Camelize(pth))
+		})
+
+		t.Run("with custom separators should split the path as desired", func(t *testing.T) {
+			m := MakeMangler(WithTokenOptions(WithExtraTokenSeparator('/', '-'))) // "-" is already there
+			assert.Equal(t, "aFolderFile", m.Camelize(pth))
+		})
+	})
 }
 
 func TestGoMangler(t *testing.T) {
